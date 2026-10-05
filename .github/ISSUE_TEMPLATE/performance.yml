@@ -1,0 +1,52 @@
+name: Performance or memory report
+description: Report delayed controls, slow previews, CPU use, or memory growth.
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: A small repeatable workload helps. Screenshots are optional. Remove private data from all attachments.
+  - type: input
+    id: versions
+    attributes:
+      label: Rowla and macOS versions
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware and display setup
+      placeholder: Apple Silicon model, display count, and Space setup
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Main symptom
+      options:
+        - Click or activation delay
+        - Thumbnail delay
+        - Memory growth
+        - High CPU use
+        - Other performance problem
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Repeatable workload
+      description: Include window count, affected apps, duration, and whether computer automation is active.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Observed result and measurement method
+      description: Include start/end memory or latency values if available. Name the tool. An estimate is acceptable if you identify it.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true

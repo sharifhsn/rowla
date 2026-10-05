@@ -1,52 +1,73 @@
-<p align="center"><img src="assets/AppIcon.png" width="128" alt="Rowla app icon"></p>
+<p align="center"><img src="assets/AppIcon.png" width="112" alt="Rowla app icon"></p>
 
 # Rowla
 
 **Every window within reach.** Pronounced **ROH-luh**.
 
-A small native macOS taskbar. See your open windows, preview them, and restore your preferred application order with one click.
+A free, open-source Windows-style taskbar for macOS. One button per window, cached hover previews, and your preferred app order one click away.
+Built for people who keep many windows open and want a predictable place to find them.
 
-[**Download for Apple Silicon**](https://github.com/sharifhsn/rowla/releases/download/v0.1.0-beta.1/Rowla-0.1.0-beta.1-macos-arm64.zip) · [Release notes](https://github.com/sharifhsn/rowla/releases/tag/v0.1.0-beta.1) · [User guide](USER_GUIDE.md) · [Report a bug](https://github.com/sharifhsn/rowla/issues/new/choose)
+[![Build and check](https://github.com/sharifhsn/rowla/actions/workflows/ci.yml/badge.svg)](https://github.com/sharifhsn/rowla/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform: macOS 26+](https://img.shields.io/badge/macOS-26%2B-black.svg)](USER_GUIDE.md#requirements)
 
-**Requires macOS 26+ and Apple Silicon. Free beta.** This release uses a persistent development signature. Apple did not notarize it. macOS can require **Open Anyway** on first launch. Automatic updates are disabled.
+[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.1.0-beta.1/Rowla-0.1.0-beta.1-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
 
-## What it does
+> **Beta:** macOS 26+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
+> macOS can require **Open Anyway** on first launch. Updates use manual downloads.
 
-- Gives each window its own button, with a compact, single-line title.
-- Restores your preferred application order with **Sort**, directly beside Start. Recent main windows come before popups.
-- Shows cached thumbnails immediately, with a compact bezel and a soft hover highlight. Fresh captures need time.
-- Closes the hovered window with **⌘W**, including minimized windows. The small **×** closes the window too.
-- Hides a pinned application icon when that application already has a discovered window.
-- Provides application search, drag reorder, appearance preferences, and display and Space filters.
+## Your windows, in your order
 
-Rowla uses native AppKit through Rust. It needs no account, has no telemetry, and keeps window previews in memory. The thumbnail cache has a **16 MiB / 32-image limit**. Native capture buffers use additional memory.
+| Control | What it does |
+| --- | --- |
+| **Window buttons** | Shows each window with a compact, single-line title. Click to activate or restore it. |
+| **Sort**, beside Start | Restores your configured app order. Recent main windows come before popups within each app. |
+| **Hover preview** | Shows a cached thumbnail immediately. A fresh capture needs time. |
+| **Hover ⌘W** or the small **×** | Closes that window, including minimized windows. The app can ask you to save changes. |
+| **Pinned apps** | Shows launch icons when the app has no discovered window. |
+| **Start and Preferences** | Provides app search, drag reorder, appearance controls, and display/Space filters. |
 
-## Get started
+Sort acts when you click it. It gives you a way to reset a busy window strip to a familiar order.
+Close controls close the selected window. They do not quit its application.
 
-1. Download the ZIP archive and extract `Rowla.app`.
-2. Move `Rowla.app` to Applications and open it.
-3. If macOS blocks it, open **System Settings → Privacy & Security → Open Anyway** for Rowla.
-4. Grant **Accessibility** access for window controls.
-5. To use thumbnails, grant **Screen Recording** access. Quit and reopen the app if macOS requests it.
+## Install
 
-[Apple documents Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Keep Gatekeeper and SIP enabled.
+1. Download the beta ZIP and extract `Rowla.app`.
+2. Move the app to Applications.
+3. Open Rowla.
+4. If macOS blocks it, use **System Settings → Privacy & Security → Open Anyway** for Rowla.
+5. Grant **Accessibility** access for window controls.
+6. For thumbnails, grant **Screen Recording** access.
+7. Quit and reopen Rowla if macOS requests it after a permission change.
 
-Close actions close the selected window, rather than the whole application. Its normal save-confirmation dialog can appear.
+[Apple describes Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Keep Gatekeeper and SIP enabled.
+Use the menu-bar icon for Preferences or Quit. Start at login and automatic window resizing are off for fresh preferences.
 
-Use the Rowla menu-bar icon for Preferences or Quit. Start at login and automatic window resizing are off for fresh preferences. Earlier Taskbar Rust builds share the same preferences and app identity. Quit the earlier build before you open Rowla.
+[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.1.0-beta.1) · [Installation help](docs/SUPPORT.md#first-launch-problems)
 
-## Beta status
+## Privacy and resources
 
-The initial release includes local Rust tests, strict Clippy checks, native UI checks, package-signature checks, and an archive round-trip check. It still needs feedback from other Macs. Intel is not included in this release.
+Rowla needs no account and has no telemetry. Preview images stay in memory.
+The thumbnail cache has a **16 MiB / 32-image limit**. Native capture buffers and other app objects use more memory.
+This limit is not a limit on total process memory. Read the [privacy statement](PRIVACY.md).
 
-Cached previews of minimized windows use the last captured image. A window already minimized before its first capture can have no thumbnail. OS updates can affect optional private window and Spaces functions. External displays, sleep/wake, fullscreen, and application-specific window controls need broader feedback. Finite local memory profiles do not establish zero leaks or zero future spikes.
+## Help shape Rowla
 
-Updates use manual versioned downloads during the beta. Quit Rowla before you replace its app bundle. Download only from this repository's Releases page.
+You can contribute with documentation, a useful bug report, device checks, design feedback, or code.
+New contributors and AI-assisted contributions are welcome. You do not need to know Rust to help.
+Contributors review and take responsibility for the work they submit.
+
+| You want to… | Start here |
+| --- | --- |
+| Get help or discuss a workflow | [Discussions](https://github.com/sharifhsn/rowla/discussions) and [support guide](docs/SUPPORT.md) |
+| Report a bug or performance problem | [Issue forms](https://github.com/sharifhsn/rowla/issues/new/choose) |
+| Make a first contribution | [Contribution guide](CONTRIBUTING.md), [good first issues](https://github.com/sharifhsn/rowla/labels/good%20first%20issue), and [roadmap](docs/ROADMAP.md) |
+| Use a coding agent | [AGENTS.md](AGENTS.md), with entry points for [Copilot](.github/copilot-instructions.md) and [Claude Code](CLAUDE.md) |
+| Report a security problem | [Private vulnerability report](https://github.com/sharifhsn/rowla/security/advisories/new) |
+
+Please read the [community conduct policy](CODE_OF_CONDUCT.md). Remove private information from public reports and screenshots.
 
 ## Build from source
-
-The complete app source is public under the [MIT license](LICENSE). You can use it, change it, and distribute it.
-The [beta 1 source tag](https://github.com/sharifhsn/rowla/tree/source-v0.1.0-beta.1) contains the runtime code for the current download.
 
 Use macOS 26+, Xcode Command Line Tools, Python 3, and [Rust through rustup](https://rustup.rs/).
 The repository pins Rust 1.96.0 and all Cargo dependencies.
@@ -59,16 +80,28 @@ open dist/Rowla.app
 ```
 
 The build script downloads Sparkle 2.10.0 and checks its pinned checksum and signature.
-It creates a local app bundle. A fresh build uses an ad-hoc signature and needs no Apple Developer membership.
-Grant the macOS permissions when you first open your build. Ad-hoc builds can need new grants after code changes.
+A fresh checkout uses an ad-hoc signature and needs no Apple Developer membership.
+Changed ad-hoc builds can need new permission grants. See [local certificates](docs/RELEASE.md#local-signatures-and-permissions) for repeated builds.
 
-The internal Cargo name remains `taskbar-rs`. The app identifier and preferences path keep compatibility with earlier Taskbar Rust builds.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, code structure, and native tests.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and native tests. Linux supports the portable library checks, not the macOS app.
+The [beta 1 source tag](https://github.com/sharifhsn/rowla/tree/source-v0.1.0-beta.1) and attached source ZIP preserve the shipped runtime source.
+Current `main` includes subsequent source improvements.
 
-## Support, privacy, and license
+<details>
+<summary><strong>Compatibility and known beta limits</strong></summary>
 
-This is the official repository for source code, downloads, and public bug reports. Contributions are welcome through pull requests.
+- The public beta download supports Apple Silicon and macOS 26+. Intel builds pass CI, but Intel live controls need independent tests.
+- A minimized window uses its last captured preview. A window minimized before its first capture can have no thumbnail until restoration.
+- Displays, Spaces, sleep/wake, fullscreen, and application-specific window controls need broader feedback.
+- Optional private window and Spaces functions can change across macOS releases.
+- Finite local memory profiles do not prove that all future paths are free of leaks or spikes.
+- The internal executable is `taskbar-rs`. The bundle identifier and legacy preferences path preserve compatibility with earlier Taskbar Rust builds.
+- Quit an earlier build before Rowla. They share preferences and an instance lock. Quit Rowla before an app-bundle replacement.
 
-Read the [user guide](USER_GUIDE.md) and [privacy statement](PRIVACY.md). Report problems through [Issues](https://github.com/sharifhsn/rowla/issues). Include the version, macOS version, affected application, and reproduction steps. Remove personal information before you attach diagnostics or screenshots.
+</details>
 
-The app uses the [MIT license](LICENSE) and includes [third-party notices](THIRD_PARTY_NOTICES.md). The app icon was generated for this project. Rowla is an independent implementation inspired by [Taskbar](https://lawand.io/taskbar/), with no affiliation to lawand.io or Apple.
+## License and acknowledgments
+
+Rowla uses the [MIT license](LICENSE). You can use, modify, and redistribute it with the required notices.
+Distributions include [third-party notices](THIRD_PARTY_NOTICES.md). The app icon was generated for this project.
+Rowla is an independent implementation inspired by [Taskbar](https://lawand.io/taskbar/), with no affiliation to lawand.io or Apple.

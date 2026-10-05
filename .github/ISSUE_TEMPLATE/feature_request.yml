@@ -15,3 +15,8 @@ body:
       label: Proposed behavior
     validations:
       required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How do you complete this task now? What causes the difficulty?

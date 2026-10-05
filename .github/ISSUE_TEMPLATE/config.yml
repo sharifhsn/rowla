@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question or share a workflow
+    url: https://github.com/sharifhsn/rowla/discussions
+    about: Get help with Rowla or discuss an idea before a larger change.
+  - name: Report a security vulnerability privately
+    url: https://github.com/sharifhsn/rowla/security/advisories/new
+    about: Keep security details and private data out of public issues.

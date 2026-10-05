@@ -1,0 +1,31 @@
+{
+  "observed_date": "2026-10-04",
+  "timezone": "America/New_York",
+  "method": "GitHub REST repository metadata. Stars and forks are interest proxies, not active users or sales.",
+  "repositories": [
+    {
+      "full_name": "ejbills/DockDoor",
+      "html_url": "https://github.com/ejbills/DockDoor",
+      "stargazers_count": 6251,
+      "forks_count": 233,
+      "open_issues_count": 77,
+      "updated_at": "2026-10-05T00:48:10Z"
+    },
+    {
+      "full_name": "lwouis/alt-tab-macos",
+      "html_url": "https://github.com/lwouis/alt-tab-macos",
+      "stargazers_count": 16362,
+      "forks_count": 886,
+      "open_issues_count": 78,
+      "updated_at": "2026-10-04T15:07:44Z"
+    },
+    {
+      "full_name": "sharifhsn/rowla",
+      "html_url": "https://github.com/sharifhsn/rowla",
+      "stargazers_count": 0,
+      "forks_count": 0,
+      "open_issues_count": 0,
+      "updated_at": "2026-10-05T01:56:38Z"
+    }
+  ]
+}
