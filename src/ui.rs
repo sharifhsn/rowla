@@ -189,19 +189,25 @@ impl State {
             return true;
         }
         let app = NSApplication::sharedApplication(MainThreadMarker::new().expect("UI thread"));
-        match &command {
-            Command::Activate(id, false) => {
-                if let Some(window) = self.snapshot.windows.iter().find(|w| w.id == *id)
-                    && let Some(target) =
-                        NSRunningApplication::runningApplicationWithProcessIdentifier(window.pid)
-                {
-                    app.yieldActivationToApplication(&target);
+        if app.isActive() {
+            match &command {
+                Command::Activate(id, false) => {
+                    if let Some(window) = self.snapshot.windows.iter().find(|w| w.id == *id)
+                        && let Some(target) =
+                            NSRunningApplication::runningApplicationWithProcessIdentifier(
+                                window.pid,
+                            )
+                    {
+                        app.yieldActivationToApplication(&target);
+                    }
                 }
+                Command::Launch(bundle, _) => {
+                    app.yieldActivationToApplicationWithBundleIdentifier(&NSString::from_str(
+                        bundle,
+                    ));
+                }
+                _ => {}
             }
-            Command::Launch(bundle, _) => {
-                app.yieldActivationToApplicationWithBundleIdentifier(&NSString::from_str(bundle));
-            }
-            _ => {}
         }
         if let Err(error) = self.tx.try_send(command) {
             *self.queue_error.borrow_mut() =

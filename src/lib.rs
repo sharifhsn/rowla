@@ -80,6 +80,10 @@ pub mod macos {
         crate::platform::benchmark_latency(seconds, fixture)
     }
     #[doc(hidden)]
+    pub fn check_fixture_activation(pid: i32) -> bool {
+        crate::platform::check_fixture_activation(pid)
+    }
+    #[doc(hidden)]
     pub fn check_fixture_close(pid: i32) -> bool {
         crate::platform::check_fixture_close(pid)
     }

@@ -459,12 +459,15 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
 }
 fn activate_pid(pid: i32) -> bool {
     NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|app| {
-        // The UI yields its activation before queueing the window command.
-        // This request accepts that handoff without the obsolete ignore flag.
-        app.activateFromApplication_options(
-            &NSRunningApplication::currentApplication(),
-            NSApplicationActivationOptions::empty(),
-        )
+        let source = NSRunningApplication::currentApplication();
+        let options = NSApplicationActivationOptions::empty();
+        // Only an active source can yield focus. Taskbar panels normally keep
+        // the other app active, so use an ordinary request in that case.
+        if source.isActive() {
+            app.activateFromApplication_options(&source, options)
+        } else {
+            app.activateWithOptions(options)
+        }
     })
 }
 
@@ -885,6 +888,59 @@ pub(crate) fn benchmark_discovery(seconds: u64) -> bool {
 
 pub(crate) fn benchmark_latency(seconds: u64, fixture: Option<i32>) -> bool {
     service::latency(seconds, fixture)
+}
+
+/// Activate only windows owned by the disposable native QA fixture.
+pub(crate) fn check_fixture_activation(pid: i32) -> bool {
+    autoreleasepool(|_| {
+        let mut elements = HashMap::new();
+        let initial = scan(&mut elements);
+        let ids: Vec<_> = initial
+            .windows
+            .iter()
+            .filter(|w| {
+                w.pid == pid
+                    && w.bundle == "io.sharif.taskbarrust.interactionfixture"
+                    && !w.minimized
+            })
+            .map(|w| w.id)
+            .take(2)
+            .collect();
+        let inactive_source = !NSRunningApplication::currentApplication().isActive();
+        let mut successes = 0;
+        let mut max_ms = 0.0f64;
+        if ids.len() == 2 {
+            for id in ids.iter().cycle().take(4) {
+                let started = Instant::now();
+                if execute(Command::Activate(*id, false), &elements).is_err() {
+                    break;
+                }
+                loop {
+                    let snapshot = scan(&mut elements);
+                    let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                        .frontmostApplication()
+                        .is_some_and(|app| app.processIdentifier() == pid);
+                    if frontmost && snapshot.windows.iter().any(|w| w.id == *id && w.focused) {
+                        successes += 1;
+                        max_ms = max_ms.max(started.elapsed().as_secs_f64() * 1000.0);
+                        break;
+                    }
+                    if started.elapsed() > Duration::from_secs(2) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        let passed = inactive_source && successes == 4;
+        drop(elements);
+        println!(
+            "{}",
+            serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
+            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,"cf_live":cf_counts().0})
+        );
+        passed
+    })
 }
 
 /// Close only a minimized window from the named disposable QA application.
