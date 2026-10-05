@@ -8,12 +8,12 @@ The first beta uses a persistent development certificate. Apple did not notarize
 1. Complete the checks in [CONTRIBUTING.md](../CONTRIBUTING.md).
 2. Use a build number greater than all previous public builds.
 3. Build the app with the chosen certificate.
-4. Do the native checks on that fixed bundle.
+4. Do the native checks on that fixed bundle. Include the binary-floor check and signed shortcut imports.
 5. Package the same bundle without another build or signature change.
 
 ```sh
 TASKBAR_BUILD_NUMBER=INTEGER TASKBAR_SIGNING_IDENTITY=CERTIFICATE_SHA1 TASKBAR_SIGNING_MODE=local scripts/build.sh
-scripts/package-beta.sh dist/Rowla.app dist/beta-OUTPUT 0.1.0-beta.NUMBER
+scripts/package-beta.sh dist/Rowla.app dist/beta-OUTPUT 0.2.0-beta.NUMBER
 ```
 
 Replace the example values. The package script accepts only Apple Silicon bundles without a live feed.

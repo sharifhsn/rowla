@@ -49,6 +49,7 @@ impl Performance {
 }
 
 pub(super) fn run(state: &Shared, count: usize) -> bool {
+    eprintln!("Native UI check: fixture handlers");
     {
         let mut s = state.borrow_mut();
         s.config.pins.clear();
@@ -74,6 +75,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let mut cases = Vec::new();
     let mut miss_details = Vec::new();
     for windows in [8usize, 32, 64] {
+        eprintln!("Native UI check: {windows} fixture buttons");
         {
             let mut s = state.borrow_mut();
             s.snapshot.windows = (1..=windows)
@@ -195,6 +197,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         let s = state.borrow();
         cases.push(serde_json::json!({"windows":windows,"visible_buttons":visible_buttons,"buttons":buttons.len(),"single_line_buttons":single_line_buttons,"truncated_buttons":truncated_buttons,"panel_height":panel.frame().size.height,"expected_panel_height":32.0*s.config.scale/100.0,"panel_hidden":!panel.isVisible(),"performance":s.performance.json()}));
     }
+    eprintln!("Native UI check: interaction regressions");
     let presentation_checks = check_presentation_updates(state);
     let cursor_and_clicks = check_cursor_and_clicks(state);
     let focus_clicks = check_focus_clicks(state);
@@ -224,6 +227,8 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let pin_checks = check_pins(state);
     let start_search = check_start_search(state);
     let snapshot_checks = check_snapshot_updates(state, count);
+    eprintln!("Native UI check: system features");
+    let system_features = check_system_features(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -240,6 +245,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && pin_checks["passed"] == true
         && start_search["passed"] == true
         && snapshot_checks["passed"] == true
+        && system_features["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -250,9 +256,116 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_system_features(state: &Shared) -> serde_json::Value {
+    let saved = state.borrow().config.clone();
+    build_preferences(state, 3);
+    let capture_control = state
+        .borrow()
+        .preferences
+        .as_ref()
+        .unwrap()
+        .body
+        .subviews()
+        .iter()
+        .any(|view| {
+            view.downcast_ref::<ActionButton>()
+                .is_some_and(|button| button.ivars().action == Action::Cycle("capture_mode".into()))
+        });
+    let capture_description_clear = {
+        let s = state.borrow();
+        let views = s.preferences.as_ref().unwrap().body.subviews();
+        let description = views.iter().find(|view| {
+            view.downcast_ref::<NSTextField>().is_some_and(|label| {
+                label
+                    .stringValue()
+                    .to_string()
+                    .starts_with("Stream reuses live frames.")
+            })
+        });
+        let permissions: Vec<_> = views
+            .iter()
+            .filter(|view| {
+                view.downcast_ref::<ActionButton>().is_some_and(|button| {
+                    matches!(
+                        button.ivars().action,
+                        Action::Accessibility | Action::ScreenPermission
+                    )
+                })
+            })
+            .collect();
+        permissions.len() == 2
+            && description.is_some_and(|description| {
+                permissions.iter().all(|button| {
+                    !objc2_foundation::NSIntersectsRect(description.frame(), button.frame())
+                })
+            })
+    };
+    let previous = state.borrow().config.capture_mode;
+    dispatch(state, Action::Cycle("capture_mode".into()));
+    let capture_changes = state.borrow().config.capture_mode != previous;
+    build_preferences(state, 2);
+    let shortcuts_control = state
+        .borrow()
+        .preferences
+        .as_ref()
+        .unwrap()
+        .body
+        .subviews()
+        .iter()
+        .any(|view| {
+            view.downcast_ref::<ActionButton>()
+                .is_some_and(|button| button.ivars().action == Action::OpenShortcuts)
+        });
+    let shortcut_install_controls = [
+        crate::system_actions::SystemAction::Sort,
+        crate::system_actions::SystemAction::Show,
+        crate::system_actions::SystemAction::Hide,
+    ]
+    .iter()
+    .all(|action| {
+        state
+            .borrow()
+            .preferences
+            .as_ref()
+            .unwrap()
+            .body
+            .subviews()
+            .iter()
+            .any(|view| {
+                view.downcast_ref::<ActionButton>().is_some_and(|button| {
+                    button.ivars().action == Action::InstallShortcut(*action)
+                        && button.frame().origin.y >= 0.0
+                })
+            })
+    });
+    state.borrow_mut().received_snapshot = false;
+    system_action(state, crate::system_actions::SystemAction::Sort);
+    let sort_defers = state.borrow().pending_system_sort && !state.borrow().received_snapshot;
+    state.borrow_mut().config.show_menubar = false;
+    system_action(state, crate::system_actions::SystemAction::Hide);
+    let hide = state.borrow().config.hidden_displays.len() == screens().len()
+        && state.borrow().config.show_menubar;
+    system_action(state, crate::system_actions::SystemAction::Show);
+    let show = state.borrow().config.hidden_displays.is_empty();
+    {
+        let mut s = state.borrow_mut();
+        s.config = saved;
+        s.pending_system_sort = false;
+        s.received_snapshot = true;
+        if let Some(preferences) = s.preferences.take() {
+            preferences.panel.close();
+        }
+    }
+    serde_json::json!({"passed":capture_control && capture_description_clear && capture_changes && shortcuts_control && shortcut_install_controls && sort_defers && hide && show,
+        "capture_control":capture_control,"capture_changes":capture_changes,"shortcuts_control":shortcuts_control,
+        "capture_description_clear":capture_description_clear,
+        "shortcut_install_controls":shortcut_install_controls,
+        "sort_defers_until_snapshot":sort_defers,"hide_all":hide,"show_all":show})
 }
 
 fn check_start_search(state: &Shared) -> serde_json::Value {
@@ -1616,7 +1729,7 @@ pub(super) fn hover_tick(state: &Shared) {
             });
         println!(
             "{}",
-            serde_json::json!({"completed":true,"passed":success,"mode":"app_local_mouseEntered_with_native_capture","configured_delay_ms":s.config.hover_ms,"rapid_source_changes":12-test.rapid_remaining,"warmed_sources":test.warmed_sources,"warmup_ms":test.warmup_ms,"samples":test.samples,"performance":s.performance.json(),"cache_bytes":s.preview_cache.bytes(),"error":error,"capture_errors":s.capture_errors,"stream_counts":crate::capture::counts(),"idle_buffers_released":error.is_none()&&test.idle_since.is_some()})
+            serde_json::json!({"completed":true,"passed":success,"mode":"app_local_mouseEntered_with_native_capture","capture_mode":s.config.capture_mode,"capture_features":crate::capture::diagnostics(),"configured_delay_ms":s.config.hover_ms,"rapid_source_changes":12-test.rapid_remaining,"warmed_sources":test.warmed_sources,"warmup_ms":test.warmup_ms,"samples":test.samples,"performance":s.performance.json(),"cache_bytes":s.preview_cache.bytes(),"error":error,"capture_errors":s.capture_errors,"stream_counts":crate::capture::counts(),"idle_buffers_released":error.is_none()&&test.idle_since.is_some()})
         );
         drop(s);
         if !success {

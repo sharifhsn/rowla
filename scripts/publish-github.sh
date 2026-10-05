@@ -42,6 +42,6 @@ if gh release view "build-$build" --repo "$repository" >/dev/null 2>&1; then
     printf 'Release tag already exists; do not overwrite a shipped build\n' >&2; exit 1
 fi
 # Upload both files in a draft. Publishing occurs only after both succeed.
-gh release create "build-$build" "$archive" "$feed" --repo "$repository" --draft --title "Rowla build $build" --notes 'Native Rust macOS taskbar. Requires macOS 26 or later. Accessibility controls windows; Screen Recording supplies local previews.'
+gh release create "build-$build" "$archive" "$feed" --repo "$repository" --draft --title "Rowla build $build" --notes 'Native Rust macOS taskbar. Requires macOS 15.2 or later. Accessibility controls windows; Screen Recording supplies local previews.'
 gh release edit "build-$build" --repo "$repository" --draft=false --latest
 printf 'Published: https://github.com/%s/releases/tag/build-%s\n' "$repository" "$build"

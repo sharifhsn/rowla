@@ -1,7 +1,7 @@
 name: Build and check
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, macos-26-intel]
+        os: [macos-15, macos-15-intel, macos-26, macos-26-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,7 +30,30 @@ jobs:
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: for script in scripts/*.sh; do bash -n "$script"; done
+      # This disposable VM's icon agent crash-loops and blocks AppKit callers.
+      # Stack confirmed in run 37272214059; upstream actions/runner-images#14751.
+      # Keep the native fixtures enabled, using AppKit's generic icon fallback.
+      - name: Use fallback icons on the affected Intel runner
+        if: matrix.os == 'macos-26-intel'
+        run: |
+          runner_uid="$(id -u)"
+          icon_agent="gui/$runner_uid/com.apple.iconservices.iconservicesagent"
+          if launchctl print "$icon_agent" >/dev/null 2>&1; then
+            launchctl bootout "$icon_agent"
+          fi
+          launchctl disable "$icon_agent"
       - run: scripts/build.sh
+      - run: python3 scripts/check-compatibility.py dist/Rowla.app
+      - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
+      - run: python3 scripts/check-native-ui.py dist/Rowla.app
+        timeout-minutes: 2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: Rowla-${{ matrix.os }}-native-ui-log
+          path: dist/ui-check/
+          if-no-files-found: ignore
+          retention-days: 7
       - run: python3 -m unittest discover -s tests -v
         env:
           TASKBAR_TEST_BUNDLE: ${{ github.workspace }}/dist/Rowla.app

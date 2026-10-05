@@ -11,6 +11,8 @@ mod dock;
 #[cfg(target_os = "macos")]
 mod ipc_budget;
 #[cfg(target_os = "macos")]
+mod native_features;
+#[cfg(target_os = "macos")]
 mod platform;
 #[cfg(target_os = "macos")]
 mod private_api;
@@ -18,6 +20,8 @@ mod private_api;
 mod runtime;
 #[cfg(any(target_os = "macos", test))]
 mod scheduler;
+#[cfg(any(target_os = "macos", test))]
+mod system_actions;
 #[cfg(target_os = "macos")]
 mod ui;
 #[cfg(target_os = "macos")]
@@ -25,6 +29,10 @@ mod updater;
 
 #[cfg(target_os = "macos")]
 pub mod macos {
+    #[doc(hidden)]
+    pub fn compatibility_probe() -> bool {
+        crate::native_features::compatibility_probe()
+    }
     /// Obtain a read-only snapshot. This can block on Accessibility IPC; call
     /// from a worker, not the host's UI thread. It never requests permissions.
     /// The embedding application needs its own Accessibility approval.
@@ -70,6 +78,10 @@ pub mod macos {
     #[doc(hidden)]
     pub fn benchmark_latency(seconds: u64, fixture: Option<i32>) -> bool {
         crate::platform::benchmark_latency(seconds, fixture)
+    }
+    #[doc(hidden)]
+    pub fn check_fixture_activation(pid: i32) -> bool {
+        crate::platform::check_fixture_activation(pid)
     }
     #[doc(hidden)]
     pub fn check_fixture_close(pid: i32) -> bool {

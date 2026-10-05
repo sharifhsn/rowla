@@ -6,8 +6,8 @@ Assessment date: October 5, 2026. Source review: public Rowla commit `56e917f`.
 
 **Use macOS 15.2+ as the target for the next supported public release.**
 Keep macOS 26 and 27 features optional, with runtime availability checks.
-This is a product recommendation. The current beta still needs macOS 26+.
-No older-OS runtime checks or performance experiments form part of this research.
+This report records the original research. The 0.2 implementation adopts this minimum.
+Read [compatibility](COMPATIBILITY.md) for current build and runtime coverage.
 
 Apple lists **macOS 27 Golden Gate 27.0.1** as the latest public version.
 Apple released 27 on September 14, 2026, and 27.0.1 on September 28.
@@ -122,15 +122,27 @@ Source: [native capture state](https://developer.apple.com/documentation/screenc
 | macOS 27 rolling clip capture | Adds a video-buffer product feature that ordinary thumbnails do not need. Do not add it to the preview path. [Clip output](https://developer.apple.com/documentation/screencapturekit/scclipbufferingoutput) |
 | HDR, microphone capture, recording, and local language models | No requirement for the current taskbar workflow. Defer them until a user need and resource budget justify their cost |
 
-## Before a lower-floor release
+## Implementation selection
+
+The 0.2 source implements capture lifecycle feedback, cooperative activation, optional snapshot capture, compact metrics, and capture-state diagnostics.
+Snapshot capture remains selectable, with Stream as the default. Newer metrics and capture-state APIs use runtime checks.
+Signed URL-based shortcuts provide explicit Sort, Show, and Hide controls without a Swift runtime or resident helper.
+
+The App Intents prototype was discoverable locally, but actual invocation failed with a helper communication error under the available signing setup.
+It is omitted from this beta. Native App Intents and direct action discovery remain candidates for a future release with verified signing and invocation.
+
+The preview bezel remains compact and inexpensive. Liquid Glass needs a visual benefit and measured resource budget before adoption.
+Video, HDR, microphone capture, language models, and touch-specific features have no established need in this workflow.
+
+## Compatibility validation
 
 The [compatibility checklist](COMPATIBILITY.md#what-older-support-needs) remains necessary.
-A declaration in this report does not change the executable or app-bundle requirements.
-Current CI on macOS 26 does not establish native behavior on 15.2, 14, or 27.
+The executable and app bundle now declare macOS 15.2.
+CI includes macOS 15 and 26 on Apple Silicon and Intel. Permission-dependent checks still need a desktop device.
 
 Newer Objective-C classes and selectors need availability checks before use on an older OS.
 New framework dependencies also need suitable link/load behavior.
-The pinned Rust bindings do not expose every macOS 27 API. Each proposed call needs a binding and availability audit.
+The pinned Rust bindings do not expose every macOS 27 API. Each new call needs a binding and availability audit.
 Private window/Spaces functions need checks on each supported OS, with public fallback behavior in the matrix.
 
 The first compatibility release needs Apple Silicon and Intel build checks plus native results for its declared versions.

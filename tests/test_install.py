@@ -3,10 +3,10 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
-import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +27,11 @@ class InstallTests(unittest.TestCase):
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir()
         executable = app / "Contents/MacOS/taskbar-rs"
-        shutil.copyfile("/bin/sleep", executable)
-        executable.chmod(0o755)
+        # Use an owned executable rather than a copied Apple platform binary.
+        # Native security/cache behavior can differ for the copied /bin/sleep.
+        subprocess.run(["xcrun", "clang", "-x", "c", "-o", str(executable), "-"],
+                       input="#include <stdlib.h>\n#include <unistd.h>\nint main(int argc, char **argv) { sleep(argc > 1 ? atoi(argv[1]) : 0); return 0; }\n",
+                       text=True, check=True, capture_output=True)
         with (app / "Contents/Info.plist").open("wb") as f:
             plistlib.dump(dict(CFBundleIdentifier="io.sharif.taskbarrust", CFBundleExecutable="taskbar-rs", CFBundleName="Rowla", CFBundlePackageType="APPL", CFBundleVersion="1"), f)
         (app / "Contents/Resources/README.md").write_text(text)
@@ -70,6 +73,15 @@ class InstallTests(unittest.TestCase):
         original = self.digest(self.destination)
         process = subprocess.Popen([str(self.destination / "Contents/MacOS/taskbar-rs"), "30"])
         try:
+            deadline = time.monotonic() + 5
+            while True:
+                self.assertIsNone(process.poll(), "The running-app fixture exited before the check")
+                opened = subprocess.run(["/usr/sbin/lsof", "-t", str(self.destination / "Contents/MacOS/taskbar-rs")],
+                                        capture_output=True, text=True)
+                if str(process.pid) in opened.stdout.split():
+                    break
+                self.assertLess(time.monotonic(), deadline, "The fixture did not map its owned executable")
+                time.sleep(0.05)
             result = self.install(self.bundle("newer", "guide two"), success=False)
             self.assertIn("Quit Rowla", result.stderr)
             self.assertEqual(self.digest(self.destination), original)

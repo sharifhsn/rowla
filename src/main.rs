@@ -27,6 +27,23 @@ fn main() {
         eprintln!("{info}");
     }));
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s == "--check-compatibility") {
+        std::process::exit(if macos::compatibility_probe() { 0 } else { 1 });
+    }
+    if args
+        .get(1)
+        .is_some_and(|s| s == "--check-fixture-activation")
+    {
+        let Some(pid) = args.get(2).and_then(|value| value.parse().ok()) else {
+            eprintln!("Pass a disposable native fixture PID.");
+            std::process::exit(2);
+        };
+        std::process::exit(if macos::check_fixture_activation(pid) {
+            0
+        } else {
+            1
+        });
+    }
     if args.get(1).is_some_and(|s| s == "--benchmark-hover") {
         let Some(fixture) = args.get(3).and_then(|s| s.parse().ok()) else {
             eprintln!(
@@ -105,7 +122,7 @@ fn main() {
 #[cfg(not(target_os = "macos"))]
 fn main() {
     eprintln!(
-        "Rowla's GUI requires macOS 26+. Its config and model library can be used on other platforms."
+        "Rowla's GUI requires macOS 15.2+. Its config and model library can be used on other platforms."
     );
     std::process::exit(1);
 }

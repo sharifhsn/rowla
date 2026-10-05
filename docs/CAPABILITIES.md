@@ -1,7 +1,7 @@
 # Rowla capabilities
 
 This list describes the current public beta and source. It describes implemented behavior, rather than complete compatibility with every application.
-The beta download needs macOS 26+ and Apple Silicon. Read [compatibility](COMPATIBILITY.md) for the reason and possible older targets.
+The beta download needs macOS 15.2+ and Apple Silicon. Read [compatibility](COMPATIBILITY.md) for binary requirements and device coverage.
 
 ## Window controls
 
@@ -48,7 +48,7 @@ Browser content tabs remain under the browser's control. Rowla does not provide 
 | App exclusions | Preferences → Blacklist, or window context menu | Removes selected applications from the window strip |
 | Temporary or persistent bar hide | Scroll gesture or bar context menu | Can hide a bar for the current session or selected display. **Show All Taskbars** restores it |
 | Fullscreen visibility | Automatic | Hides a bar when its display has a focused fullscreen window |
-| Menu-bar controls | Rowla menu-bar icon / Preferences → Menubar | The icon opens Preferences. The Menubar page provides **Show All Taskbars** and can hide the icon |
+| Menu-bar controls | Rowla menu-bar icon / Preferences → Menubar | The icon opens Preferences. The Menubar page provides **Show All Taskbars**, **Hide All Taskbars**, and **Open Shortcuts** |
 | Light, dark, or system theme | Preferences → Appearance | Controls the theme, transparency, alignment, bar scale, font, and maximum button width |
 | Optional title and state markers | Preferences → Appearance | Can hide titles, use minimized/hidden markers, and display thumbnail titles |
 | Notification indicator | Preferences → Taskbar | Shows a dot when the Dock exposes an application badge. It does not provide a notification inbox |
@@ -60,11 +60,15 @@ Browser content tabs remain under the browser's control. Rowla does not provide 
 | Hover preview | Hover a window button | Needs Screen Recording access. Cached images appear immediately. A first or fresh capture needs time |
 | Minimized preview | Hover a minimized window | Reuses the last captured image while it remains in the bounded cache. A window with no earlier capture can have no image |
 | Preview appearance | Preferences → Thumbnails / Appearance | Controls preview size, title, font, and hover delay. The frame has a compact border and a soft hover highlight |
-| Bounded preview resources | Automatic | Limits thumbnail bitmaps to 16 MiB and 32 entries. One capture stream uses a three-buffer queue. Total process memory is larger |
+| Preview capture method | Preferences → Thumbnails | Stream is the default. Snapshot uses the single-image API. Both share the cache and one-operation limit |
+| Capture lifecycle | Automatic, macOS 15.2+ | Active/inactive callbacks stop unavailable sources after a confirmed native stop. They do not define minimized-window behavior |
+| Bounded preview resources | Automatic | Limits thumbnail bitmaps to 16 MiB and 32 entries. At most one capture operation runs. Stream mode uses a three-buffer queue. Total process memory is larger |
 | Start at login | Preferences → Taskbar | Off for fresh preferences. macOS controls login registration and can require approval |
 | Dock replacement option | Preferences → Advanced | Off for fresh preferences. Fully hides the Dock while Rowla runs. Quit restores its saved Dock values. After a crash, the next launch restores them |
 | Avoid bar overlap | Preferences → Advanced | Optional automatic resize of overlapping windows. Off for fresh preferences. Needs Accessibility |
-| Local diagnostics | About or context menu → Save Diagnostics | Records aggregate counts, timings, capability flags, and errors. Remove private data before a public attachment |
+| System actions | Preferences → Menubar → Install Shortcut… | Installs Sort, Show, and Hide shortcuts. Each opens one local URL. Run saved shortcuts with a keyboard shortcut or Spotlight |
+| Compact native controls | Automatic, macOS 26+ | Uses native compact metrics in Preferences. Older systems use the existing layout |
+| Local diagnostics | About or context menu → Save Diagnostics | Records aggregate counts, timings, capability flags, and errors. macOS 27 adds optional native capture-state data. Remove private data before a public attachment |
 | Local crash reports | Preferences → Policies | Controls local reports. Rowla has no remote crash-report service |
 | Manual updates | GitHub Releases | The public beta has no live update feed. Sparkle support in the source does not enable automatic updates for this download |
 | Local use | Default | Needs no account. Has no telemetry or advertising. Previews stay in memory and never become an on-disk screenshot archive |
@@ -75,7 +79,8 @@ Imported preferences can differ from fresh defaults. [The user guide](../USER_GU
 
 The MIT source includes pinned dependencies, build scripts, fixtures, microbenchmarks, and tests.
 CI checks the portable Rust library on Linux and builds the app on Apple Silicon and Intel macOS runners.
-Intel CI does not establish Intel daily-use compatibility. Older macOS versions still need runtime checks.
+CI includes macOS 15 and 26 on both architectures, with binary-floor and native UI checks.
+CI does not establish permission-dependent controls or daily-use compatibility.
 
 [CONTRIBUTING.md](../CONTRIBUTING.md) describes the human workflow.
 [AGENTS.md](../AGENTS.md) gives coding agents the same commands, native invariants, and evidence requirements.

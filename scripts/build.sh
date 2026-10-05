@@ -59,6 +59,8 @@ ditto "$project_dir/licenses" "$app_dir/Contents/Resources/licenses"
 build_number="${TASKBAR_BUILD_NUMBER:-$(date +%s)}"
 [[ "$build_number" =~ ^[0-9]+$ ]] || { printf 'TASKBAR_BUILD_NUMBER must be an integer.\n' >&2; exit 1; }
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app_dir/Contents/Info.plist"
+mkdir -p "$app_dir/Contents/Resources/shortcuts"
+cp "$project_dir/shortcuts/"*.shortcut "$app_dir/Contents/Resources/shortcuts/"
 python3 "$project_dir/scripts/configure-updates.py" "$app_dir/Contents/Info.plist"
 "$project_dir/scripts/sign-bundle.sh" "$app_dir"
 # Check again after compilation in case a profiling workload started meanwhile.

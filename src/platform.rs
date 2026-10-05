@@ -7,6 +7,7 @@ use objc2::{
     rc::autoreleasepool,
     runtime::{AnyClass, AnyObject},
 };
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::{NSArray, NSPoint, NSSize, NSString, NSURL, ns_string};
 use std::{
     collections::{HashMap, HashSet},
@@ -457,14 +458,17 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
     result.map(|()| None)
 }
 fn activate_pid(pid: i32) -> bool {
-    let app: Option<Retained<AnyObject>> = unsafe {
-        msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationWithProcessIdentifier:pid]
-    };
-    if let Some(app) = app {
-        unsafe { msg_send![&*app,activateWithOptions:2usize] }
-    } else {
-        false
-    }
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|app| {
+        let source = NSRunningApplication::currentApplication();
+        let options = NSApplicationActivationOptions::empty();
+        // Only an active source can yield focus. Taskbar panels normally keep
+        // the other app active, so use an ordinary request in that case.
+        if source.isActive() {
+            app.activateFromApplication_options(&source, options)
+        } else {
+            app.activateWithOptions(options)
+        }
+    })
 }
 
 pub fn installed_apps() -> Vec<Application> {
@@ -703,8 +707,14 @@ impl Drop for Image {
         unsafe { CFRelease(self.0) }
     }
 }
-pub fn screenshot(id: u32, width: isize, height: isize, tx: Sender<Result<(u32, Image), String>>) {
-    crate::capture::screenshot(id, width, height, tx);
+pub fn screenshot(
+    id: u32,
+    width: isize,
+    height: isize,
+    tx: Sender<Result<(u32, Image), String>>,
+    mode: crate::config::CaptureMode,
+) {
+    crate::capture::screenshot(id, width, height, tx, mode);
 }
 
 pub fn import_pins(config: &mut Config) {
@@ -803,6 +813,7 @@ pub fn benchmark(count: usize, lifecycle: bool) -> bool {
                 width,
                 (width as f64 * w.height / w.width.max(1.0)) as isize,
                 tx,
+                crate::config::CaptureMode::Stream,
             )
         });
         match rx.recv_timeout(Duration::from_secs(15)) {
@@ -877,6 +888,74 @@ pub(crate) fn benchmark_discovery(seconds: u64) -> bool {
 
 pub(crate) fn benchmark_latency(seconds: u64, fixture: Option<i32>) -> bool {
     service::latency(seconds, fixture)
+}
+
+/// Activate only windows owned by the disposable native QA fixture.
+pub(crate) fn check_fixture_activation(pid: i32) -> bool {
+    // Match the app's passive AppKit context. A command-line process does not
+    // otherwise initialize NSApplication or process activation-state updates.
+    let app = objc2_app_kit::NSApplication::sharedApplication(
+        objc2::MainThreadMarker::new().expect("main thread"),
+    );
+    app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    autoreleasepool(|_| {
+        let mut elements = HashMap::new();
+        let initial = scan(&mut elements);
+        let ids: Vec<_> = initial
+            .windows
+            .iter()
+            .filter(|w| {
+                w.pid == pid
+                    && w.bundle == "io.sharif.taskbarrust.interactionfixture"
+                    && !w.minimized
+            })
+            .map(|w| w.id)
+            .take(2)
+            .collect();
+        let inactive_source = !NSRunningApplication::currentApplication().isActive();
+        let mut successes = 0;
+        let mut max_ms = 0.0f64;
+        let mut error = None;
+        if ids.len() == 2 {
+            for id in ids.iter().cycle().take(4) {
+                let started = Instant::now();
+                let (result, status) = crate::ipc_budget::run(Duration::from_millis(160), || {
+                    execute(Command::Activate(*id, false), &elements)
+                });
+                if let Err(message) = result {
+                    error = Some(format!("{message}: {status:?}"));
+                    break;
+                }
+                loop {
+                    objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
+                        &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
+                    );
+                    let snapshot = scan(&mut elements);
+                    let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                        .frontmostApplication()
+                        .is_some_and(|app| app.processIdentifier() == pid);
+                    if frontmost && snapshot.windows.iter().any(|w| w.id == *id && w.focused) {
+                        successes += 1;
+                        max_ms = max_ms.max(started.elapsed().as_secs_f64() * 1000.0);
+                        break;
+                    }
+                    if started.elapsed() > Duration::from_secs(2) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        let passed = inactive_source && successes == 4;
+        drop(elements);
+        println!(
+            "{}",
+            serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
+            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
+            "error":error,"cf_live":cf_counts().0})
+        );
+        passed
+    })
 }
 
 /// Close only a minimized window from the named disposable QA application.

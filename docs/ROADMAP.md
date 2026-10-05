@@ -1,7 +1,7 @@
 # Rowla priorities
 
 This roadmap gives contribution priorities. It does not promise release dates.
-The current beta supports Apple Silicon and macOS 26+. Intel builds pass CI, but the public download and manual device coverage remain limited.
+The current beta supports Apple Silicon and macOS 15.2+. Intel builds pass CI, but the public download and manual device coverage remain limited.
 
 ## Near-term priorities
 
@@ -14,23 +14,19 @@ The current beta supports Apple Silicon and macOS 26+. Intel builds pass CI, but
 | Discoverability | Users can see the workflow before installation | A short demo from synthetic fixture windows with no private desktop content |
 
 Notarization and a future Homebrew cask need a stable distribution process and owner approval.
-The [feature assessment](MACOS_FEATURE_RESEARCH.md) recommends macOS 15.2+ for the next public compatibility release.
-macOS 14 remains a plausible technical target. Older support still needs a complete API audit and runtime checks.
+The 0.2 compatibility release sets macOS 15.2 as the minimum.
+macOS 14 remains a possible technical target, with a separate maintenance decision and device checks necessary.
 Automatic updates need a signed public feed.
-These are proposals rather than current capabilities.
 
-## macOS API experiments
+## Implemented macOS API additions
 
-The [assessment](MACOS_FEATURE_RESEARCH.md#highest-value-experiments) gives evidence, introduction versions, and limits for these proposals:
+The [assessment](MACOS_FEATURE_RESEARCH.md#highest-value-experiments) gives the API evidence and introduction versions.
+The 0.2 source includes cooperative activation, capture lifecycle callbacks, compact native controls, and optional capture-state diagnostics.
+It also provides explicit Sort, Show, and Hide actions through a separate App Intents extension.
+Snapshot capture is selectable in Preferences. Stream remains the default until broader measurements justify a change.
 
-1. Review cooperative app activation for the intermittent click failures.
-2. Compare single-image capture against the current stream for latency and memory.
-3. Add macOS 15.2 capture lifecycle feedback.
-4. Use macOS 26 compact metrics where native controls need them.
-5. Expose explicit Sort and taskbar visibility actions through Shortcuts and Spotlight.
-6. Add optional macOS 27 capture-state diagnostics.
-
-Preserve the bounded capture design. No performance improvement is established until measurements show it.
+Useful next contributions include capture comparisons and permission-dependent checks on macOS 15.2 and Intel devices.
+Keep the capture limits and report exact workloads, OS versions, and measurement tools.
 
 ## First contributions
 

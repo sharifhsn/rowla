@@ -9,6 +9,14 @@ use std::{
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    #[default]
+    Stream,
+    Snapshot,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -48,6 +56,7 @@ pub struct Config {
     pub indicate_hidden: bool,
     pub show_menubar: bool,
     pub thumbnails: bool,
+    pub capture_mode: CaptureMode,
     pub blacklist: Vec<String>,
     pub resize_overlap: bool,
     pub fully_hide_dock: bool,
@@ -109,6 +118,7 @@ impl Default for Config {
             indicate_hidden: true,
             show_menubar: true,
             thumbnails: true,
+            capture_mode: CaptureMode::default(),
             blacklist: vec![],
             resize_overlap: false,
             fully_hide_dock: false,

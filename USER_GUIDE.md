@@ -8,14 +8,14 @@ Official downloads and support: <https://github.com/sharifhsn/rowla>
 
 ## Requirements
 
-- macOS 26 or later for the current beta download.
+- macOS 15.2 or later for the current beta download.
 - Apple Silicon: M1 or later for the beta ZIP. Intel source builds pass CI, but live controls need independent validation.
 - Accessibility permission for window discovery and controls.
 - Optional Screen Recording permission for thumbnails.
 
 This is a free beta with a persistent development signature. Apple did not notarize this release. macOS can block first launch until you approve this specific app. Automatic updates are disabled. Use manual downloads for later beta versions.
 
-The current build and app manifest explicitly set macOS 26. The API review found no macOS 26-only requirement in the main features.
+The executable and app manifest both set a macOS 15.2 minimum. Newer optional APIs use runtime availability checks.
 Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBILITY.md) for the API review and older-version limits.
 
 ## Installation
@@ -49,6 +49,32 @@ Close controls close the selected window. They do not quit the application. An a
 Pinned icons appear only when the application has no discovered window. A minimized or hidden window still counts as a window.
 
 Cached thumbnails appear immediately. A first capture needs time. Rowla retains a last captured preview for a minimized window. A window that was already minimized before its first capture can have no thumbnail.
+
+## Preview capture options
+
+Open Preferences → Thumbnails to select **Preview capture: Stream** or **Snapshot**.
+Stream is the default. It reuses live frames for a hovered window and stops after idle time.
+Snapshot requests one image for each refresh. It can help you compare capture behavior on your Mac.
+
+Both methods use the same 16 MiB / 32-image cache and cancellation rules.
+Rowla permits only one native capture operation at a time. An unconfirmed native operation blocks another capture.
+A minimized window retains its last image with either method.
+
+## Shortcuts and Spotlight
+
+1. Open Preferences → Menubar.
+2. Select **Install Sort Shortcut…**, **Install Show Shortcut…**, or **Install Hide Shortcut…**.
+3. Review the URL and Open URLs actions, then select **Add Shortcut** in Shortcuts.
+4. Assign a keyboard shortcut through the Shortcuts details if you want one.
+
+On first use, macOS can ask for permission to open Rowla. Select **Allow** for that shortcut.
+
+Sort applies your order after Rowla receives its window list.
+Show restores all bars. Hide hides all bars and enables the menu-bar icon for restoration.
+
+The saved shortcuts can run from Spotlight. They start Rowla if necessary.
+Each shortcut opens one local URL. It does not run a shell command or need Apple Intelligence.
+You can also use an Open URLs action with `rowla://sort`, `rowla://show`, or `rowla://hide`.
 
 ## Preferences and privacy
 
