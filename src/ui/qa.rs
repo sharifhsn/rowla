@@ -224,6 +224,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let pin_checks = check_pins(state);
     let start_search = check_start_search(state);
     let snapshot_checks = check_snapshot_updates(state, count);
+    let system_features = check_system_features(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -240,6 +241,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && pin_checks["passed"] == true
         && start_search["passed"] == true
         && snapshot_checks["passed"] == true
+        && system_features["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -250,9 +252,63 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_system_features(state: &Shared) -> serde_json::Value {
+    let saved = state.borrow().config.clone();
+    build_preferences(state, 3);
+    let capture_control = state
+        .borrow()
+        .preferences
+        .as_ref()
+        .unwrap()
+        .body
+        .subviews()
+        .iter()
+        .any(|view| {
+            view.downcast_ref::<ActionButton>()
+                .is_some_and(|button| button.ivars().action == Action::Cycle("capture_mode".into()))
+        });
+    let previous = state.borrow().config.capture_mode;
+    dispatch(state, Action::Cycle("capture_mode".into()));
+    let capture_changes = state.borrow().config.capture_mode != previous;
+    build_preferences(state, 2);
+    let shortcuts_control = state
+        .borrow()
+        .preferences
+        .as_ref()
+        .unwrap()
+        .body
+        .subviews()
+        .iter()
+        .any(|view| {
+            view.downcast_ref::<ActionButton>()
+                .is_some_and(|button| button.ivars().action == Action::OpenShortcuts)
+        });
+    state.borrow_mut().received_snapshot = false;
+    system_action(state, crate::system_actions::SystemAction::Sort);
+    let sort_defers = state.borrow().pending_system_sort && !state.borrow().received_snapshot;
+    state.borrow_mut().config.show_menubar = false;
+    system_action(state, crate::system_actions::SystemAction::Hide);
+    let hide = state.borrow().config.hidden_displays.len() == screens().len()
+        && state.borrow().config.show_menubar;
+    system_action(state, crate::system_actions::SystemAction::Show);
+    let show = state.borrow().config.hidden_displays.is_empty();
+    {
+        let mut s = state.borrow_mut();
+        s.config = saved;
+        s.pending_system_sort = false;
+        s.received_snapshot = true;
+        if let Some(preferences) = s.preferences.take() {
+            preferences.panel.close();
+        }
+    }
+    serde_json::json!({"passed":capture_control && capture_changes && shortcuts_control && sort_defers && hide && show,
+        "capture_control":capture_control,"capture_changes":capture_changes,"shortcuts_control":shortcuts_control,
+        "sort_defers_until_snapshot":sort_defers,"hide_all":hide,"show_all":show})
 }
 
 fn check_start_search(state: &Shared) -> serde_json::Value {

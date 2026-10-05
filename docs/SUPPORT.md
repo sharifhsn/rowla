@@ -17,7 +17,7 @@ This is a volunteer beta project. There is no guaranteed response time.
 
 ## First-launch problems
 
-The download needs macOS 26+ and Apple Silicon. It uses a development certificate without Apple notarization.
+The download needs macOS 15.2+ and Apple Silicon. It uses a development certificate without Apple notarization.
 If macOS blocks it, use Open Anyway for Rowla as described in the user guide.
 Some managed Macs do not permit this exception.
 

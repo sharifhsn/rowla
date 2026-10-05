@@ -2,67 +2,71 @@
 
 ## Current distribution
 
-| Target | Current status |
+The 0.2 release sets **macOS 15.2+** as its minimum. The public beta ZIP supports Apple Silicon.
+The executable, app manifest, and separate actions extension all declare 15.2.
+The original 0.1 beta retains its macOS 26 requirement and unchanged release files.
+
+| Target | Coverage |
 | --- | --- |
-| macOS 26+ on Apple Silicon | Public beta ZIP. Current local development and native checks use macOS 26 |
-| macOS 26+ on Intel | Source builds and CI pass. No Intel beta ZIP or independent daily-use validation |
-| macOS 15.2+ | Recommended target for the next public compatibility release. No supported download or runtime validation yet |
-| macOS 14 | Plausible technical minimum. No supported download or runtime validation yet |
-| macOS 13 | Needs capture changes and a full compatibility review. No supported download |
-| macOS 12 or earlier | Needs more capture/login compatibility work and a framework audit. No supported download |
-| Linux | Portable Rust configuration/model tests. No taskbar GUI |
+| macOS 15.2+ on Apple Silicon | Supported floor for the 0.2 beta. CI includes a macOS 15 runner |
+| macOS 15.2+ on Intel | Source builds. CI includes macOS 15 Intel. No Intel public beta ZIP |
+| macOS 26 | Local native fixture checks use 26.6.2. CI includes both architectures |
+| macOS 27 | Optional capture-state selector uses a runtime check. No local 27 desktop check |
+| macOS 14 or earlier | Unsupported. More API and maintenance work is necessary |
+| Linux | Portable Rust configuration/model checks. No taskbar GUI |
 | Windows | No taskbar GUI |
 
-## Why the beta says macOS 26
+CI exercises native UI fixtures and required selector availability without capture or Accessibility permissions.
+CI does not establish first-launch grants, application-specific controls, displays, Spaces, or daily-use reliability.
+A macOS 15 runner does not prove behavior on the exact 15.2 point release.
 
-The repository explicitly sets macOS 26 in two places:
+## Binary requirements
 
-- [.cargo/config.toml](../.cargo/config.toml) sets `MACOSX_DEPLOYMENT_TARGET = "26.0"` for the executable.
-- [scripts/Info.plist](../scripts/Info.plist) sets `LSMinimumSystemVersion` to `26.0` for the app bundle.
+- [.cargo/config.toml](../.cargo/config.toml) sets `MACOSX_DEPLOYMENT_TARGET = "15.2"`.
+- [scripts/Info.plist](../scripts/Info.plist) sets `LSMinimumSystemVersion` to `15.2`.
+- [native/Info.plist](../native/Info.plist) sets the extension minimum to `15.2`.
+- [scripts/build-intents.sh](../scripts/build-intents.sh) compiles the Swift extension for 15.2 on each requested architecture.
 
-The local build also reports `minos 26.0` in its Mach-O build command.
-Thus, the current download has a real launch restriction. It is not only a documentation label.
+[scripts/check-compatibility.py](../scripts/check-compatibility.py) examines every bundled Mach-O binary and architecture.
+It rejects higher minimum versions, inconsistent app/extension versions, and absent actions metadata.
+The embedded Sparkle framework and helpers declare macOS 12.0. They do not raise Rowla's floor.
+The native `--check-compatibility` command checks required selectors on the current OS without permission prompts.
 
-The implementation review found no macOS 26-only requirement in the main taskbar, Sort, or preview features.
-The current floor reflects the build configuration and validated environment. It does not establish the oldest technically possible version.
-The reason for the original choice is not recorded in the source.
+## Required and optional APIs
 
-## API requirements found in the review
-
-Review date: October 4, 2026. Apple documentation metadata and the local SDK headers agree on these versions.
-
-| Current use | First macOS version | Effect |
+| API | First macOS version | Use |
 | --- | --- | --- |
-| ScreenCaptureKit single-window filter | 12.3 | Supplies the preview stream's window selection |
-| `SCStreamConfiguration.capturesAudio` | 13.0 | The capture setup calls this property to disable audio |
-| `SCStreamConfiguration.ignoreShadowsSingleWindow` | 14.0 | The capture setup calls this property without a runtime availability check |
-| `SMAppService` | 13.0 | Supplies optional start-at-login registration. The code checks class availability |
+| ScreenCaptureKit single-window filter | 12.3 | Selects a window for capture |
+| `SCStreamConfiguration.capturesAudio` | 13.0 | Disables audio |
+| `SMAppService` | 13.0 | Optional start at login |
+| App Intents extension | 13.0 | Sort, Show, and Hide actions in Shortcuts |
+| Cooperative activation | 14.0 | Click activation and application launch |
+| `ignoreShadowsSingleWindow` | 14.0 | Removes shadows from capture |
+| `SCScreenshotManager.captureImage` | 14.0 | Optional Snapshot preview method |
+| Capture active/inactive callbacks | 15.2 | Handles unavailable capture sources |
+| Compact native control metrics | 26.0 | Optional Preferences layout, runtime checked |
+| Spotlight action discovery | 26.0 | System discovery of the same App Intents |
+| `SCStream.isCapturing` | 27.0 | Optional diagnostics, runtime checked |
 
-Sources: [single-window filter](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(desktopindependentwindow:)), [audio property](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/capturesaudio), [shadow property](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/ignoreshadowssinglewindow), and [login service](https://developer.apple.com/documentation/servicemanagement/smappservice).
-The relevant implementation is in [capture.rs](../src/capture.rs) and [platform.rs](../src/platform.rs).
+The [feature assessment](MACOS_FEATURE_RESEARCH.md) gives Apple sources and the selection rationale.
+An inactive event is not a minimized-window event or native stop acknowledgment.
+A false capture-state value does not prove buffer release. Confirmed stop completion remains necessary.
 
-The unguarded shadow property makes macOS 14 a reasonable first compatibility target for the current capture code.
-That is an engineering inference, rather than a complete API audit or a claim of supported macOS 14 behavior.
-Optional private window/Spaces functions and framework dependencies also need checks on each target OS.
-The embedded Sparkle framework declares macOS 12.0 as its minimum. It does not explain the macOS 26 floor.
+## Why the first beta said macOS 26
 
-## Recommended next public minimum
-
-The [feature assessment](MACOS_FEATURE_RESEARCH.md) recommends **macOS 15.2+** for the next public release.
-It compares macOS 27 through 12.3, with Apple sources and exact API introduction versions.
-macOS 15.2 adds capture lifecycle callbacks, and Apple's latest update batch includes Sequoia.
-macOS 14 remains a plausible technical target, but its public support needs a separate maintenance decision.
-Optional macOS 26/27 additions do not need to raise the minimum for the entire app.
-This recommendation does not change the current download's macOS 26 requirement.
+The original executable and app manifest both declared 26.0. That was a real launch restriction.
+The source review found no macOS 26-only requirement in the main taskbar, Sort, or previews.
+The reason for the original choice is not recorded in the source.
+The 0.2 release changes the binary floor and adds compatibility gates, with matching documentation.
 
 ## What older support needs
 
-1. Audit every used native symbol and selector for the target OS.
-2. Set the executable and app-bundle floors to the same intended version.
-3. Build each architecture and inspect the binary and embedded framework requirements.
-4. Exercise first launch, both permission paths, previews, and disposable window controls on the actual older OS.
-5. Exercise minimized windows, multiple displays, Spaces, sleep/wake, and denied permissions.
-6. Publish a separate tested release with exact OS and architecture coverage.
+1. Audit each native symbol, selector, and dependency for the target OS.
+2. Set consistent executable, extension, and bundle minimum versions.
+3. Examine every bundled binary on each architecture.
+4. Exercise permissions, previews, and disposable window controls on the target OS.
+5. Exercise minimized windows, displays, Spaces, sleep/wake, and denied permissions.
+6. Record exact OS versions and any behavior that remains unverified.
 
-A lower deployment target alone does not complete these checks. CI on macOS 26 does not substitute for an older-OS runtime.
-The current beta remains a macOS 26+ release until a separate compatibility release completes this work.
+Private window and Spaces functions can change between releases. Public fallbacks can produce an incomplete window list.
+macOS 14 remains a possible technical target. Rowla supports 15.2 to retain capture lifecycle feedback and limit the maintenance matrix.

@@ -7,6 +7,7 @@ use objc2::{
     rc::autoreleasepool,
     runtime::{AnyClass, AnyObject},
 };
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::{NSArray, NSPoint, NSSize, NSString, NSURL, ns_string};
 use std::{
     collections::{HashMap, HashSet},
@@ -457,14 +458,14 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
     result.map(|()| None)
 }
 fn activate_pid(pid: i32) -> bool {
-    let app: Option<Retained<AnyObject>> = unsafe {
-        msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationWithProcessIdentifier:pid]
-    };
-    if let Some(app) = app {
-        unsafe { msg_send![&*app,activateWithOptions:2usize] }
-    } else {
-        false
-    }
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|app| {
+        // The UI yields its activation before queueing the window command.
+        // This request accepts that handoff without the obsolete ignore flag.
+        app.activateFromApplication_options(
+            &NSRunningApplication::currentApplication(),
+            NSApplicationActivationOptions::empty(),
+        )
+    })
 }
 
 pub fn installed_apps() -> Vec<Application> {
@@ -703,8 +704,14 @@ impl Drop for Image {
         unsafe { CFRelease(self.0) }
     }
 }
-pub fn screenshot(id: u32, width: isize, height: isize, tx: Sender<Result<(u32, Image), String>>) {
-    crate::capture::screenshot(id, width, height, tx);
+pub fn screenshot(
+    id: u32,
+    width: isize,
+    height: isize,
+    tx: Sender<Result<(u32, Image), String>>,
+    mode: crate::config::CaptureMode,
+) {
+    crate::capture::screenshot(id, width, height, tx, mode);
 }
 
 pub fn import_pins(config: &mut Config) {
@@ -803,6 +810,7 @@ pub fn benchmark(count: usize, lifecycle: bool) -> bool {
                 width,
                 (width as f64 * w.height / w.width.max(1.0)) as isize,
                 tx,
+                crate::config::CaptureMode::Stream,
             )
         });
         match rx.recv_timeout(Duration::from_secs(15)) {

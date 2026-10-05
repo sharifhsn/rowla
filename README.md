@@ -9,14 +9,14 @@ Built for people who keep many windows open and want a predictable place to find
 
 [![Build and check](https://github.com/sharifhsn/rowla/actions/workflows/ci.yml/badge.svg)](https://github.com/sharifhsn/rowla/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform: macOS 26+](https://img.shields.io/badge/macOS-26%2B-black.svg)](USER_GUIDE.md#requirements)
+[![Platform: macOS 15.2+](https://img.shields.io/badge/macOS-15.2%2B-black.svg)](USER_GUIDE.md#requirements)
 
-[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.1.0-beta.1/Rowla-0.1.0-beta.1-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
+[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.2.0-beta.1/Rowla-0.2.0-beta.1-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
 
-> **Beta:** macOS 26+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
+> **Beta:** macOS 15.2+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
 > macOS can require **Open Anyway** on first launch. Updates use manual downloads.
 
-[Why macOS 26?](docs/COMPATIBILITY.md#why-the-beta-says-macos-26) · [Full capabilities and limits](docs/CAPABILITIES.md)
+[macOS compatibility](docs/COMPATIBILITY.md) · [Full capabilities and limits](docs/CAPABILITIES.md)
 
 ## Your windows, in your order
 
@@ -30,12 +30,13 @@ Built for people who keep many windows open and want a predictable place to find
 | **Start** | Searches installed apps, with pinned/recent lists and arrow-key navigation. |
 | **Window context menu** | Provides minimize/restore, fullscreen, app hide/quit, pins, and exclusions. |
 | **Display and Space behavior** | Provides per-display bars and current-Space window visibility. Can show all display windows on every bar. |
+| **Shortcuts and Spotlight** | Provides explicit Sort Windows, Show Taskbars, and Hide Taskbars actions. Spotlight actions need macOS 26+. |
 | **Appearance and optional system controls** | Provides themes, scale, fonts, transparency, login registration, Dock hiding, and overlap resize. |
 
 Sort acts when you click it. It gives you a way to reset a busy window strip to a familiar order.
 Close controls close the selected window. They do not quit its application.
 Read the [capability tables](docs/CAPABILITIES.md) for access paths, defaults, permissions, and application-specific limits.
-Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for proposed additions and the recommended next compatibility target.
+Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for the API selection and version requirements.
 
 ## Install
 
@@ -50,7 +51,7 @@ Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for proposed
 [Apple describes Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Keep Gatekeeper and SIP enabled.
 Use the menu-bar icon for Preferences or Quit. Start at login and automatic window resizing are off for fresh preferences.
 
-[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.1.0-beta.1) · [Installation help](docs/SUPPORT.md#first-launch-problems)
+[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.2.0-beta.1) · [Installation help](docs/SUPPORT.md#first-launch-problems)
 
 ## Privacy and resources
 
@@ -76,7 +77,7 @@ Please read the [community conduct policy](CODE_OF_CONDUCT.md). Remove private i
 
 ## Build from source
 
-Use macOS 26+, Xcode Command Line Tools, Python 3, and [Rust through rustup](https://rustup.rs/).
+Use macOS 15.2+, Xcode 16 or later, Python 3, and [Rust through rustup](https://rustup.rs/).
 The repository pins Rust 1.96.0 and all Cargo dependencies.
 
 ```sh
@@ -91,13 +92,13 @@ A fresh checkout uses an ad-hoc signature and needs no Apple Developer membershi
 Changed ad-hoc builds can need new permission grants. See [local certificates](docs/RELEASE.md#local-signatures-and-permissions) for repeated builds.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and native tests. Linux supports the portable library checks, not the macOS app.
-The [beta 1 source tag](https://github.com/sharifhsn/rowla/tree/source-v0.1.0-beta.1) and attached source ZIP preserve the shipped runtime source.
-Current `main` includes subsequent source improvements.
+The [release tag](https://github.com/sharifhsn/rowla/tree/v0.2.0-beta.1) preserves the shipped source.
+The original beta and its source tag remain available in the release history.
 
 <details>
 <summary><strong>Compatibility and known beta limits</strong></summary>
 
-- The public beta download supports Apple Silicon and macOS 26+. Intel builds pass CI, but Intel live controls need independent tests.
+- The public beta download supports Apple Silicon and macOS 15.2+. Intel builds pass CI, but Intel live controls need independent tests.
 - A minimized window uses its last captured preview. A window minimized before its first capture can have no thumbnail until restoration.
 - Displays, Spaces, sleep/wake, fullscreen, and application-specific window controls need broader feedback.
 - Optional private window and Spaces functions can change across macOS releases.

@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, macos-26-intel]
+        os: [macos-15, macos-15-intel, macos-26, macos-26-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,6 +31,9 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: for script in scripts/*.sh; do bash -n "$script"; done
       - run: scripts/build.sh
+      - run: python3 scripts/check-compatibility.py dist/Rowla.app
+      - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
+      - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --benchmark-ui 10
       - run: python3 -m unittest discover -s tests -v
         env:
           TASKBAR_TEST_BUNDLE: ${{ github.workspace }}/dist/Rowla.app

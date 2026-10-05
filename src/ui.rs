@@ -11,8 +11,8 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSTimer, NSURL,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -65,6 +65,8 @@ enum Action {
     PinBehavior(String, String),
     HideBar(u32, bool),
     ShowBars,
+    HideBars,
+    OpenShortcuts,
     Accessibility,
     ScreenPermission,
     Reset,
@@ -124,6 +126,8 @@ struct State {
     config: Config,
     snapshot: Snapshot,
     pending_focus: Option<active_feedback::PendingFocus>,
+    pending_system_sort: bool,
+    received_snapshot: bool,
     bars: Vec<Bar>,
     icons: HashMap<String, Retained<NSImage>>,
     order: Vec<u32>,
@@ -184,6 +188,21 @@ impl State {
                 .set(self.performance.commands.get() + 1);
             return true;
         }
+        let app = NSApplication::sharedApplication(MainThreadMarker::new().expect("UI thread"));
+        match &command {
+            Command::Activate(id, false) => {
+                if let Some(window) = self.snapshot.windows.iter().find(|w| w.id == *id)
+                    && let Some(target) =
+                        NSRunningApplication::runningApplicationWithProcessIdentifier(window.pid)
+                {
+                    app.yieldActivationToApplication(&target);
+                }
+            }
+            Command::Launch(bundle, _) => {
+                app.yieldActivationToApplicationWithBundleIdentifier(&NSString::from_str(bundle));
+            }
+            _ => {}
+        }
         if let Err(error) = self.tx.try_send(command) {
             *self.queue_error.borrow_mut() =
                 Some(format!("Window command queue is busy or stopped: {error}"));
@@ -230,6 +249,14 @@ define_class!(
    if let Some(t)=s.interaction_timer.take(){t.invalidate();}s.hover_close.take();crate::runtime::stop();let _=s.tx.try_send(Command::Stop);if s.gui_smoke.is_none(){if let Err(e)=s.config.save(){s.error=e;}let _=crate::dock::shutdown_restore();}crate::capture::shutdown();}
   #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
   fn reopen(&self,_a:&NSApplication,_v:bool)->bool{show_preferences(&self.ivars().state,0);true}
+  #[unsafe(method(application:openURLs:))]
+  fn open_urls(&self,_app:&NSApplication,urls:&NSArray<NSURL>){
+   for url in urls {
+    if let Some(url)=url.absoluteString() && let Some(action)=crate::system_actions::SystemAction::from_url(&url.to_string()) {
+     system_action(&self.ivars().state,action);
+    }
+   }
+  }
  }
  impl Delegate {
   #[unsafe(method(tick:))] fn tick(&self,_t:&NSTimer){tick(&self.ivars().state);}
@@ -751,6 +778,7 @@ fn tick_inner(state: &Shared) {
             s.error = error;
         }
         while let Ok(snapshot) = s.rx.try_recv() {
+            s.received_snapshot = true;
             permissions_changed |= apply_snapshot(&mut s, snapshot);
         }
         if s.pending_focus
@@ -777,6 +805,10 @@ fn tick_inner(state: &Shared) {
         if s.gui_smoke.is_none() {
             release_closed_preferences(&mut s);
         }
+    }
+    if state.borrow().pending_system_sort && state.borrow().received_snapshot {
+        state.borrow_mut().pending_system_sort = false;
+        dispatch(state, Action::Sort);
     }
     if permissions_changed {
         refresh_permission_labels(state);
@@ -1385,11 +1417,24 @@ fn activate_window(state: &Shared, id: u32) {
         .click_feedback
         .record(started.elapsed());
 }
+fn system_action(state: &Shared, action: crate::system_actions::SystemAction) {
+    match action {
+        crate::system_actions::SystemAction::Sort => state.borrow_mut().pending_system_sort = true,
+        crate::system_actions::SystemAction::Show => dispatch(state, Action::ShowBars),
+        crate::system_actions::SystemAction::Hide => dispatch(state, Action::HideBars),
+    }
+}
 fn dispatch(state: &Shared, a: Action) {
     let preview_id = state.borrow().preview_id;
     hide_preview(state);
     match a {
         Action::Sort => sort_order::apply(state),
+        Action::OpenShortcuts => {
+            state.borrow().command(Command::Launch(
+                "com.apple.shortcuts".into(),
+                "launchOrActivateApp".into(),
+            ));
+        }
         Action::AddOrderApp => {
             let display = state.borrow().bars.first().map(|b| b.display).unwrap_or(0);
             if let Some(menu) = state.borrow_mut().start.take() {
@@ -1610,8 +1655,22 @@ fn dispatch(state: &Shared, a: Action) {
             let mut s = state.borrow_mut();
             s.hidden_now.clear();
             s.config.hidden_displays.clear();
-            if let Err(e) = s.config.save() {
+            if s.gui_smoke.is_none()
+                && let Err(e) = s.config.save()
+            {
                 s.error = e;
+            }
+            s.dirty = true;
+        }
+        Action::HideBars => {
+            let mut s = state.borrow_mut();
+            s.config.hidden_displays = screens().iter().map(|(id, _)| *id).collect();
+            // Keep a restoration control even if the user previously hid the icon.
+            s.config.show_menubar = true;
+            if s.gui_smoke.is_none()
+                && let Err(error) = s.config.save()
+            {
+                s.error = error;
             }
             s.dirty = true;
         }
@@ -1654,6 +1713,12 @@ fn dispatch(state: &Shared, a: Action) {
                     "menu"
                 }
                 .into();
+            } else if k == "capture_mode" {
+                s.config.capture_mode = match s.config.capture_mode {
+                    crate::config::CaptureMode::Stream => crate::config::CaptureMode::Snapshot,
+                    crate::config::CaptureMode::Snapshot => crate::config::CaptureMode::Stream,
+                };
+                crate::capture::cancel_pending();
             } else if k == "update_policy" {
                 s.config.update_policy = match s.config.update_policy.as_str() {
                     "manual" => "check",
@@ -1662,7 +1727,9 @@ fn dispatch(state: &Shared, a: Action) {
                 }
                 .into();
             }
-            if let Err(e) = s.config.save() {
+            if s.gui_smoke.is_none()
+                && let Err(e) = s.config.save()
+            {
                 s.error = e;
             }
             s.dirty = true;
@@ -1822,6 +1889,7 @@ fn context_menu(s: &Shared, a: Option<&Action>) -> Retained<NSMenu> {
         menu_item(s, &m, "Hide for Now", Action::HideBar(*d, true));
     }
     menu_item(s, &m, "Show All Taskbars", Action::ShowBars);
+    menu_item(s, &m, "Hide All Taskbars", Action::HideBars);
     if !matches!(a, Some(Action::Sort)) {
         menu_item(s, &m, "Sort Windows", Action::Sort);
         menu_item(s, &m, "Edit Application Order…", Action::Preferences(10));
@@ -2101,8 +2169,9 @@ fn request_preview(state: &Shared, id: u32) {
     s.capture_started = Instant::now();
     let tx = s.image_tx.clone();
     let (width, height) = preview_size(&s, id);
+    let mode = s.config.capture_mode;
     drop(s);
-    platform::screenshot(id, width, height, tx);
+    platform::screenshot(id, width, height, tx, mode);
 }
 fn task_button_visible(button: &ActionButton, scroll: &TaskScrollView) -> bool {
     let clip = scroll.contentView();
@@ -2405,7 +2474,10 @@ fn persist_metrics(s: &State) {
     }
     let (cf_live, cf_peak) = platform::cf_counts();
     let (frames, sessions, live, running) = crate::capture::counts();
-    let d = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"accessibility":s.snapshot.trusted,"screen_recording":s.snapshot.screen_allowed,"hover_close_enabled":s.hover_close.as_ref().is_some_and(hover_close::Service::enabled),"login_status":platform::login_status(),"windows":s.snapshot.windows.len(),"icons":s.icons.len(),"order_entries":s.order.len(),"displays":s.bars.len(),"installed_apps":s.apps.len(),"captures":s.captures,"capture_errors":s.capture_errors,"capture_pending":s.capture_busy,"scan_ms":s.snapshot.scan_ms,"capabilities":s.snapshot.capabilities,"discovery":s.snapshot.discovery,"cf_live":cf_live,"cf_peak":cf_peak,"stream_frames":frames,"stream_sessions":sessions,"stream_live":live,"stream_running":running,"capture_stop_errors":crate::capture::stop_errors(),"capture_native_state_uncertain":crate::capture::native_uncertain(),"performance":s.performance.json(),"preview_cache_entries":s.preview_cache.len(),"interaction_timer_active":s.interaction_timer.is_some(),"error":s.error});
+    let mut d = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"accessibility":s.snapshot.trusted,"screen_recording":s.snapshot.screen_allowed,"hover_close_enabled":s.hover_close.as_ref().is_some_and(hover_close::Service::enabled),"login_status":platform::login_status(),"windows":s.snapshot.windows.len(),"icons":s.icons.len(),"order_entries":s.order.len(),"displays":s.bars.len(),"installed_apps":s.apps.len(),"captures":s.captures,"capture_errors":s.capture_errors,"capture_pending":s.capture_busy,"scan_ms":s.snapshot.scan_ms,"capabilities":s.snapshot.capabilities,"discovery":s.snapshot.discovery,"cf_live":cf_live,"cf_peak":cf_peak,"stream_frames":frames,"stream_sessions":sessions,"stream_live":live,"stream_running":running,"capture_stop_errors":crate::capture::stop_errors(),"capture_native_state_uncertain":crate::capture::native_uncertain(),"performance":s.performance.json(),"preview_cache_entries":s.preview_cache.len(),"interaction_timer_active":s.interaction_timer.is_some(),"error":s.error});
+    d["capture_features"] = crate::capture::diagnostics();
+    d["capture_mode"] = serde_json::to_value(s.config.capture_mode).unwrap();
+    d["minimum_macos"] = "15.2".into();
     let _ = std::fs::write(
         Config::directory().join("diagnostics.json"),
         serde_json::to_vec_pretty(&d).unwrap(),
@@ -2446,6 +2518,7 @@ fn build_preferences(state: &Shared, page: usize) {
         p.setTitle(&NSString::from_str("Rowla — Preferences"));
         p.center();
         let root = p.contentView().unwrap();
+        crate::native_features::compact_controls(&root);
         for (i, t) in [
             "Taskbar",
             "Appearance",
@@ -2606,6 +2679,31 @@ fn build_preferences(state: &Shared, page: usize) {
         );
         body.addSubview(&b);
         y -= 42.0;
+        let hide = ActionButton::new(
+            state,
+            Action::HideBars,
+            "Hide all taskbars",
+            rect(8.0, y, 240.0, 32.0),
+        );
+        body.addSubview(&hide);
+        y -= 60.0;
+        let title = label("Shortcuts and Spotlight", rect(8.0, y, 730.0, 28.0), 18.0);
+        body.addSubview(&title);
+        y -= 65.0;
+        let text = label(
+            "In Shortcuts, add a Rowla action: Sort Windows, Show Taskbars, or Hide Taskbars.\nOn macOS 26+, these actions also work in Spotlight.",
+            rect(8.0, y, 730.0, 52.0),
+            13.0,
+        );
+        body.addSubview(&text);
+        y -= 44.0;
+        let shortcuts = ActionButton::new(
+            state,
+            Action::OpenShortcuts,
+            "Open Shortcuts",
+            rect(8.0, y, 240.0, 32.0),
+        );
+        body.addSubview(&shortcuts);
     }
     let values = match page {
         1 => vec![
@@ -2686,6 +2784,26 @@ fn build_preferences(state: &Shared, page: usize) {
             .targets
             .push(target.into_super());
         y -= 32.0;
+    }
+    if page == 3 {
+        let mode = match c.capture_mode {
+            crate::config::CaptureMode::Stream => "Stream",
+            crate::config::CaptureMode::Snapshot => "Snapshot",
+        };
+        let button = ActionButton::new(
+            state,
+            Action::Cycle("capture_mode".into()),
+            &format!("Preview capture: {mode}"),
+            rect(8.0, y, 300.0, 30.0),
+        );
+        body.addSubview(&button);
+        y -= 44.0;
+        let text = label(
+            "Stream reuses live frames. Snapshot captures one image per refresh. Both keep the same cache limit.",
+            rect(8.0, y - 26.0, 730.0, 50.0),
+            13.0,
+        );
+        body.addSubview(&text);
     }
     if page == 1 || page == 0 || page == 7 {
         let (k, v) = match page {
@@ -2807,7 +2925,7 @@ fn build_preferences(state: &Shared, page: usize) {
     if page == 9 {
         let t = label(
             &format!(
-                "Rowla {}\nNative Rust / objc2 / AppKit, for macOS 26+.\nIndependent implementation. Original Taskbar remains available.\nInstallation and permissions: Help → README",
+                "Rowla {}\nNative Rust / objc2 / AppKit, for macOS 15.2+.\nIndependent implementation. Original Taskbar remains available.\nInstallation and permissions: Help → README",
                 env!("CARGO_PKG_VERSION")
             ),
             rect(8.0, y - 90.0, 730.0, 120.0),
@@ -2838,8 +2956,7 @@ fn build_preferences(state: &Shared, page: usize) {
     body.scrollPoint(NSPoint::new(0.0, content_height));
     if state.borrow().gui_smoke.is_none() {
         panel.makeKeyAndOrderFront(None);
-        #[allow(deprecated)]
-        NSApplication::sharedApplication(m).activateIgnoringOtherApps(true);
+        NSApplication::sharedApplication(m).activate();
     }
 }
 fn build_start(state: &Shared, d: u32) {
@@ -3118,6 +3235,9 @@ fn run_mode(
     config.normalize();
     if hover.is_some() {
         config.hover_ms = 0;
+        if std::env::var("ROWLA_QA_CAPTURE_MODE").is_ok_and(|mode| mode == "snapshot") {
+            config.capture_mode = crate::config::CaptureMode::Snapshot;
+        }
     }
     if smoke.is_none() {
         config.save()?;
@@ -3144,6 +3264,8 @@ fn run_mode(
         config,
         snapshot: Snapshot::default(),
         pending_focus: None,
+        pending_system_sort: false,
+        received_snapshot: false,
         bars: vec![],
         icons: HashMap::new(),
         order: vec![],

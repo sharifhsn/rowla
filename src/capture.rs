@@ -1,5 +1,5 @@
 //! One bounded capture session, one latest frame, and no per-frame screenshot RPC.
-use crate::platform::Image;
+use crate::{config::CaptureMode, platform::Image};
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 use objc2::{
@@ -16,13 +16,13 @@ use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::*;
 use objc2_foundation::{NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamDelegate,
-    SCStreamOutput, SCStreamOutputType,
+    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
 };
 use std::{
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Sender, SyncSender},
     },
     time::{Duration, Instant},
@@ -35,6 +35,7 @@ struct Request {
     height: usize,
     tx: Response,
     generation: u64,
+    mode: CaptureMode,
 }
 enum Command {
     Capture(Request),
@@ -50,6 +51,31 @@ static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static NATIVE_UNCERTAIN: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static INACTIVE_EVENTS: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_EVENTS: AtomicU64 = AtomicU64::new(0);
+static NATIVE_CAPTURING: AtomicU8 = AtomicU8::new(0);
+static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_PENDING: AtomicBool = AtomicBool::new(false);
+const SOURCE_INACTIVE: &str = "Preview source is inactive";
+pub(crate) fn diagnostics() -> serde_json::Value {
+    let native: Option<bool> = match NATIVE_CAPTURING.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    };
+    serde_json::json!({"source_active_events":ACTIVE_EVENTS.load(Ordering::Relaxed),
+        "source_inactive_events":INACTIVE_EVENTS.load(Ordering::Relaxed),
+        "native_is_capturing":native,"snapshot_requests":SNAPSHOTS.load(Ordering::Relaxed),
+        "snapshot_pending":SNAPSHOT_PENDING.load(Ordering::Relaxed)})
+}
+fn observe_native(stream: &SCStream) {
+    let value = match crate::native_features::native_capture_state(stream) {
+        Some(false) => 1,
+        Some(true) => 2,
+        None => 0,
+    };
+    NATIVE_CAPTURING.store(value, Ordering::Relaxed);
+}
 pub(crate) const CANCELLED: &str = "Preview cancelled";
 pub(crate) fn cancel_pending() {
     GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -74,6 +100,24 @@ struct FrameSlot {
     image: Option<Image>,
     error: Option<String>,
     enabled: bool,
+    inactive: bool,
+}
+impl FrameSlot {
+    fn content_active(&mut self, active: bool) {
+        self.inactive = !active;
+        if !active {
+            self.image = None;
+        }
+    }
+    fn preview(&self) -> Result<Option<Image>, String> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.inactive {
+            return Err(SOURCE_INACTIVE.into());
+        }
+        Ok(self.image.clone())
+    }
 }
 struct OutputIvars {
     slot: Arc<Mutex<FrameSlot>>,
@@ -111,7 +155,7 @@ define_class!(
                 };
                 if let Some(image) = copy_frame(&buffer) {
                     let mut slot = self.ivars().slot.lock().unwrap_or_else(|e| e.into_inner());
-                    if !slot.enabled {
+                    if !slot.enabled || slot.inactive {
                         return;
                     }
                     slot.image = Some(image);
@@ -122,6 +166,20 @@ define_class!(
         }
     }
     unsafe impl SCStreamDelegate for Output {
+        #[unsafe(method(streamDidBecomeInactive:))]
+        unsafe fn inactive(&self, _stream: &SCStream) {
+            let mut slot = self.ivars().slot.lock().unwrap_or_else(|e| e.into_inner());
+            slot.content_active(false);
+            INACTIVE_EVENTS.fetch_add(1, Ordering::Relaxed);
+            // This is not a stop acknowledgement. Keep the one native session
+            // until stop completion or didStopWithError confirms termination.
+        }
+        #[unsafe(method(streamDidBecomeActive:))]
+        unsafe fn active(&self, _stream: &SCStream) {
+            let mut slot = self.ivars().slot.lock().unwrap_or_else(|e| e.into_inner());
+            slot.content_active(true);
+            ACTIVE_EVENTS.fetch_add(1, Ordering::Relaxed);
+        }
         #[unsafe(method(stream:didStopWithError:))]
         unsafe fn stopped(&self, _stream: &SCStream, error: &NSError) {
             ACTIVE.store(false, Ordering::Relaxed);
@@ -249,6 +307,128 @@ fn completion(f: impl FnOnce(&RcBlock<dyn Fn(*mut NSError)>)) -> Result<(), Stri
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| "Capture operation timed out".to_string())?
 }
+fn configuration(r: &Request) -> Retained<SCStreamConfiguration> {
+    // SAFETY: each configuration belongs to the serial capture worker. Its
+    // dimensions are clamped before enqueueing; SDR and silent capture remain.
+    unsafe {
+        let config = SCStreamConfiguration::new();
+        config.setWidth(r.width);
+        config.setHeight(r.height);
+        config.setMinimumFrameInterval(CMTime::new(1, 1));
+        config.setQueueDepth(3);
+        config.setPixelFormat(u32::from_be_bytes(*b"BGRA"));
+        config.setShowsCursor(false);
+        config.setCapturesAudio(false);
+        config.setIgnoreShadowsSingleWindow(true);
+        config
+    }
+}
+
+// A timed-out screenshot keeps its filter/configuration and receiver alive.
+// No subsequent screenshot or stream starts until its callback completes.
+struct PendingSnapshot {
+    rx: mpsc::Receiver<Result<Image, String>>,
+    enabled: Arc<AtomicBool>,
+    _filter: Filter,
+    _config: Retained<SCStreamConfiguration>,
+}
+impl PendingSnapshot {
+    fn start(r: &Request) -> Result<Self, String> {
+        let filter = filter(r.id)?;
+        let config = configuration(r);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let enabled = Arc::new(AtomicBool::new(true));
+        let accepting = enabled.clone();
+        let generation = r.generation;
+        let width = r.width;
+        let height = r.height;
+        let block = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
+            autoreleasepool(|_| {
+                let result = if !accepting.load(Ordering::Acquire)
+                    || GENERATION.load(Ordering::Acquire) != generation
+                    || SHUTTING_DOWN.load(Ordering::Acquire)
+                {
+                    Err(CANCELLED.into())
+                } else if let Some(error) = unsafe { error.as_ref() } {
+                    Err(error.localizedDescription().to_string())
+                } else {
+                    // SAFETY: Apple lends the image for this completion call.
+                    // Copy bounded SDR pixels before the callback returns.
+                    unsafe { image.as_ref() }
+                        .and_then(|image| copy_screenshot(image, width, height))
+                        .ok_or_else(|| "Screenshot has no bounded SDR image".into())
+                };
+                let _ = tx.try_send(result);
+            });
+        });
+        SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
+        SNAPSHOT_PENDING.store(true, Ordering::Relaxed);
+        // SAFETY: macOS 15.2 includes this macOS 14 API. PendingSnapshot keeps
+        // immutable inputs alive; Apple copies the asynchronous completion.
+        unsafe {
+            SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+                &filter.0,
+                &config,
+                Some(&block),
+            );
+        }
+        Ok(Self {
+            rx,
+            enabled,
+            _filter: filter,
+            _config: config,
+        })
+    }
+}
+impl Drop for PendingSnapshot {
+    fn drop(&mut self) {
+        self.enabled.store(false, Ordering::Release);
+        SNAPSHOT_PENDING.store(false, Ordering::Relaxed);
+    }
+}
+fn copy_screenshot(image: &CGImage, max_width: usize, max_height: usize) -> Option<Image> {
+    let width = CGImage::width(Some(image));
+    let height = CGImage::height(Some(image));
+    let stride = CGImage::bytes_per_row(Some(image));
+    let length = stride.checked_mul(height)?;
+    if width == 0
+        || height == 0
+        || width > max_width
+        || height > max_height
+        || CGImage::bits_per_component(Some(image)) != 8
+        || CGImage::bits_per_pixel(Some(image)) != 32
+        || stride < width.checked_mul(4)?
+        || length > 16_000_000
+    {
+        return None;
+    }
+    let original = CGImage::data_provider(Some(image))?;
+    let data = CGDataProvider::data(Some(&original))?;
+    if data.length() < length as isize || data.byte_ptr().is_null() {
+        return None;
+    }
+    // SAFETY: the checked length belongs to retained CFData. CFData::new copies
+    // pixels, so neither the cached image nor AppKit retains a native surface.
+    let copied = unsafe { CFData::new(None, data.byte_ptr(), length as isize)? };
+    let provider = CGDataProvider::with_cf_data(Some(&copied))?;
+    let color = CGImage::color_space(Some(image))?;
+    let copy = unsafe {
+        CGImage::new(
+            width,
+            height,
+            8,
+            32,
+            stride,
+            Some(&color),
+            CGImage::bitmap_info(Some(image)),
+            Some(&provider),
+            std::ptr::null(),
+            true,
+            CGColorRenderingIntent::RenderingIntentDefault,
+        )?
+    };
+    Some(Image(CFRetained::into_raw(copy).as_ptr().cast()))
+}
 struct Session {
     id: u32,
     width: usize,
@@ -265,18 +445,7 @@ impl Session {
         let filter = filter(r.id)?;
         let slot = Arc::new(Mutex::new(FrameSlot::default()));
         let output = Output::new(slot.clone());
-        let config = unsafe {
-            let config = SCStreamConfiguration::new();
-            config.setWidth(r.width);
-            config.setHeight(r.height);
-            config.setMinimumFrameInterval(CMTime::new(1, 1));
-            config.setQueueDepth(3);
-            config.setPixelFormat(u32::from_be_bytes(*b"BGRA"));
-            config.setShowsCursor(false);
-            config.setCapturesAudio(false);
-            config.setIgnoreShadowsSingleWindow(true);
-            config
-        };
+        let config = configuration(r);
         let stream = unsafe {
             let stream = SCStream::initWithFilter_configuration_delegate(
                 SCStream::alloc(),
@@ -317,6 +486,7 @@ impl Session {
             slot.error = None;
             slot.image = None;
             slot.enabled = true;
+            slot.inactive = false;
         }
         // A timed-out start may still have reached macOS. Keep its session and
         // forbid further native calls until restart, rather than creating more.
@@ -333,6 +503,7 @@ impl Session {
             self.slot.lock().unwrap_or_else(|e| e.into_inner()).enabled = false;
         }
         result?;
+        observe_native(&self.stream);
         ACTIVE.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -378,6 +549,7 @@ impl Session {
             self.failure = None;
             self.running = false;
             ACTIVE.store(false, Ordering::Relaxed);
+            observe_native(&self.stream);
         }
         Ok(())
     }
@@ -391,10 +563,7 @@ impl Session {
     }
     fn image(&self) -> Result<Option<Image>, String> {
         let slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(error) = &slot.error {
-            return Err(error.clone());
-        }
-        Ok(slot.image.clone())
+        slot.preview()
     }
 }
 impl Drop for Session {
@@ -425,11 +594,19 @@ fn discard_obsolete<T>(
 }
 fn engine(rx: mpsc::Receiver<Command>) {
     let mut session: Option<Session> = None;
+    let mut snapshot: Option<PendingSnapshot> = None;
     let mut listing_stalled = false;
     let mut last_request = Instant::now();
     loop {
         if SHUTTING_DOWN.load(Ordering::Acquire) {
             break;
+        }
+        if snapshot
+            .as_ref()
+            .is_some_and(|pending| !matches!(pending.rx.try_recv(), Err(mpsc::TryRecvError::Empty)))
+        {
+            snapshot = None;
+            NATIVE_UNCERTAIN.store(false, Ordering::Relaxed);
         }
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Command::Shutdown(tx)) => {
@@ -453,6 +630,42 @@ fn engine(rx: mpsc::Receiver<Command>) {
                     }
                     if listing_stalled {
                         return Err("Window listing stalled. Restart Rowla to retry.".into());
+                    }
+                    if snapshot.is_some() {
+                        return Err("Screenshot completion is pending".into());
+                    }
+                    if request.mode == CaptureMode::Snapshot {
+                        if let Some(s) = &mut session {
+                            s.stop()?;
+                        }
+                        session = None;
+                        snapshot = Some(PendingSnapshot::start(&request).inspect_err(|error| {
+                            listing_stalled = error == "Window listing timed out";
+                        })?);
+                        let result = snapshot
+                            .as_ref()
+                            .unwrap()
+                            .rx
+                            .recv_timeout(Duration::from_secs(5));
+                        return match result {
+                            Ok(result) => {
+                                snapshot = None;
+                                result.map(|image| (request.id, image))
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                snapshot = None;
+                                Err("Screenshot callback disconnected".into())
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                snapshot
+                                    .as_ref()
+                                    .unwrap()
+                                    .enabled
+                                    .store(false, Ordering::Release);
+                                NATIVE_UNCERTAIN.store(true, Ordering::Relaxed);
+                                Err("Screenshot operation timed out".into())
+                            }
+                        };
                     }
                     if session.as_ref().is_some_and(|s| {
                         s.id != request.id || s.width != request.width || s.height != request.height
@@ -509,9 +722,21 @@ fn engine(rx: mpsc::Receiver<Command>) {
                     request.generation,
                     GENERATION.load(Ordering::Acquire),
                 );
+                if let Some(s) = &session {
+                    observe_native(&s.stream);
+                }
                 if result.as_ref().is_err_and(|error| error == CANCELLED) {
                     // Release cancelled native buffers after a confirmed stop.
                     // An uncertain stop keeps its one session for recovery.
+                    autoreleasepool(|_| {
+                        if let Some(s) = &mut session
+                            && s.stop().is_ok()
+                        {
+                            session = None;
+                        }
+                    });
+                }
+                if result.as_ref().is_err_and(|error| error == SOURCE_INACTIVE) {
                     autoreleasepool(|_| {
                         if let Some(s) = &mut session
                             && s.stop().is_ok()
@@ -543,7 +768,7 @@ fn engine(rx: mpsc::Receiver<Command>) {
     });
     STOPPED.store(true, Ordering::Release);
 }
-pub fn screenshot(id: u32, width: isize, height: isize, tx: Response) {
+pub fn screenshot(id: u32, width: isize, height: isize, tx: Response, mode: CaptureMode) {
     if SHUTTING_DOWN.load(Ordering::Acquire) {
         let _ = tx.send(Err("Preview engine has shut down".into()));
         return;
@@ -559,6 +784,7 @@ pub fn screenshot(id: u32, width: isize, height: isize, tx: Response) {
         height: height.clamp(40, 800) as usize,
         tx,
         generation: GENERATION.load(Ordering::Acquire),
+        mode,
     };
     if let Err(mpsc::TrySendError::Full(r) | mpsc::TrySendError::Disconnected(r)) =
         engine.try_send(Command::Capture(r))
@@ -591,6 +817,64 @@ pub fn shutdown() {
 mod tests {
     use super::*;
     use std::{cell::Cell, rc::Rc};
+
+    fn test_image() -> CFRetained<CGImage> {
+        let bytes = [0x80u8; 8 * 8 * 4];
+        let data = unsafe { CFData::new(None, bytes.as_ptr(), bytes.len() as isize).unwrap() };
+        let provider = CGDataProvider::with_cf_data(Some(&data)).unwrap();
+        let color = CGColorSpace::new_device_rgb().unwrap();
+        unsafe {
+            CGImage::new(
+                8,
+                8,
+                8,
+                32,
+                32,
+                Some(&color),
+                CGBitmapInfo(
+                    CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
+                ),
+                Some(&provider),
+                std::ptr::null(),
+                false,
+                CGColorRenderingIntent::RenderingIntentDefault,
+            )
+            .unwrap()
+        }
+    }
+    #[test]
+    fn snapshot_copy_rejects_oversize_and_owns_pixels_after_source_release() {
+        let original = test_image();
+        assert!(copy_screenshot(&original, 7, 8).is_none());
+        assert!(copy_screenshot(&original, 8, 7).is_none());
+        let copy = copy_screenshot(&original, 8, 8).unwrap();
+        drop(original);
+        let image = unsafe { &*copy.0.cast::<CGImage>() };
+        assert_eq!(CGImage::width(Some(image)), 8);
+        let provider = CGImage::data_provider(Some(image)).unwrap();
+        let data = CGDataProvider::data(Some(&provider)).unwrap();
+        assert_eq!(data.length(), 256);
+        assert_eq!(unsafe { *data.byte_ptr() }, 0x80);
+    }
+    #[test]
+    fn inactive_content_drops_live_frame_without_claiming_native_termination() {
+        let image = test_image();
+        let mut slot = FrameSlot {
+            enabled: true,
+            image: Some(Image(CFRetained::into_raw(image).as_ptr().cast())),
+            ..FrameSlot::default()
+        };
+        slot.content_active(false);
+        assert!(slot.image.is_none());
+        assert!(slot.enabled);
+        assert!(slot.error.is_none());
+        assert_eq!(slot.preview().err().as_deref(), Some(SOURCE_INACTIVE));
+        slot.content_active(true);
+        assert!(slot.preview().unwrap().is_none());
+        slot.error = Some("Native stream ended".into());
+        slot.content_active(true);
+        assert_eq!(slot.preview().err().as_deref(), Some("Native stream ended"));
+    }
 
     #[test]
     fn obsolete_native_replies_release_images_and_do_not_report_old_errors() {

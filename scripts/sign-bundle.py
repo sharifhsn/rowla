@@ -54,6 +54,10 @@ def main() -> None:
         for target in [base / "XPCServices/Downloader.xpc", base / "XPCServices/Installer.xpc",
                        base / "Autoupdate", base / "Updater.app", framework]:
             subprocess.run(["/usr/bin/codesign", *args, str(target)], check=True)
+    for extension in sorted((app / "Contents/Extensions").glob("*.appex")):
+        entitlements = Path(__file__).resolve().parent.parent / "native/Entitlements.plist"
+        subprocess.run(["/usr/bin/codesign", *args, "--entitlements", str(entitlements),
+                        str(extension)], check=True)
     subprocess.run(["/usr/bin/codesign", *args, "--identifier", "io.sharif.taskbarrust", str(app)], check=True)
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 

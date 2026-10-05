@@ -22,7 +22,7 @@ Use [AGENTS.md](AGENTS.md) for the shared agent instructions. Do not present gen
 
 ## Build
 
-Use macOS 26+, Xcode Command Line Tools, Python 3, and Rust through rustup.
+Use macOS 15.2+, Xcode 16 or later, Python 3, and Rust through rustup.
 The repository pins Rust 1.96.0 in `rust-toolchain.toml`. Keep `Cargo.lock` in source control.
 
 ```sh
@@ -33,6 +33,8 @@ open dist/Rowla.app
 The build script creates `dist/Rowla.app`. It checks the dependency notices and downloads a pinned Sparkle archive.
 It uses two Cargo jobs by default. Set `TASKBAR_BUILD_JOBS` to change this limit.
 Python supports the build and test tools. The app needs no Python runtime.
+
+The full Xcode installation compiles the separate Swift actions extension. Command Line Tools alone are insufficient.
 
 Use `scripts/build.sh --universal` to build for Apple Silicon and Intel.
 The public beta download supports Apple Silicon only.
@@ -45,6 +47,8 @@ cargo test --locked --all-targets -j 2
 cargo clippy --locked --all-targets -j 2 -- -D warnings
 for script in scripts/*.sh; do bash -n "$script"; done
 scripts/build.sh
+python3 scripts/check-compatibility.py dist/Rowla.app
+dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
 TASKBAR_TEST_BUNDLE="$PWD/dist/Rowla.app" python3 -m unittest discover -s tests -v
 ```
 
@@ -70,7 +74,9 @@ CI does not grant Accessibility or Screen Recording access. It does not prove co
 | --- | --- |
 | `src/ui.rs`, `src/ui/` | AppKit controls, previews, menus, and native UI checks |
 | `src/platform.rs`, `src/platform/` | Accessibility discovery, observers, and window controls |
-| `src/capture.rs` | ScreenCaptureKit stream and thumbnail cache |
+| `src/capture.rs` | Serial ScreenCaptureKit stream and snapshot capture |
+| `src/native_features.rs` | Runtime checks for newer optional APIs and compatibility probe |
+| `src/system_actions.rs`, `native/` | Exact system action URLs and the separate Swift actions extension |
 | `src/config.rs`, `src/window_order.rs` | Preferences and Sort order |
 | `src/runtime.rs`, `src/scheduler.rs`, `src/ipc_budget.rs` | Work queues, deadlines, and request limits |
 | `src/models.rs` | Owned window data |

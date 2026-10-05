@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>io.sharif.taskbarrust.actions</string>
+<key>CFBundleExecutable</key><string>RowlaActions</string>
+<key>CFBundleName</key><string>Rowla Actions</string>
+<key>CFBundleDisplayName</key><string>Rowla</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>15.2</string>
+<key>EXAppExtensionAttributes</key><dict>
+<key>EXExtensionPointIdentifier</key><string>com.apple.appintents-extension</string>
+</dict>
+</dict></plist>
