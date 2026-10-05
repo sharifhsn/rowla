@@ -49,6 +49,7 @@ impl Performance {
 }
 
 pub(super) fn run(state: &Shared, count: usize) -> bool {
+    eprintln!("Native UI check: fixture handlers");
     {
         let mut s = state.borrow_mut();
         s.config.pins.clear();
@@ -74,6 +75,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let mut cases = Vec::new();
     let mut miss_details = Vec::new();
     for windows in [8usize, 32, 64] {
+        eprintln!("Native UI check: {windows} fixture buttons");
         {
             let mut s = state.borrow_mut();
             s.snapshot.windows = (1..=windows)
@@ -195,6 +197,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         let s = state.borrow();
         cases.push(serde_json::json!({"windows":windows,"visible_buttons":visible_buttons,"buttons":buttons.len(),"single_line_buttons":single_line_buttons,"truncated_buttons":truncated_buttons,"panel_height":panel.frame().size.height,"expected_panel_height":32.0*s.config.scale/100.0,"panel_hidden":!panel.isVisible(),"performance":s.performance.json()}));
     }
+    eprintln!("Native UI check: interaction regressions");
     let presentation_checks = check_presentation_updates(state);
     let cursor_and_clicks = check_cursor_and_clicks(state);
     let focus_clicks = check_focus_clicks(state);
@@ -224,6 +227,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let pin_checks = check_pins(state);
     let start_search = check_start_search(state);
     let snapshot_checks = check_snapshot_updates(state, count);
+    eprintln!("Native UI check: system features");
     let system_features = check_system_features(state);
     let passed = misses == 0
         && hits == 624
@@ -272,6 +276,35 @@ fn check_system_features(state: &Shared) -> serde_json::Value {
             view.downcast_ref::<ActionButton>()
                 .is_some_and(|button| button.ivars().action == Action::Cycle("capture_mode".into()))
         });
+    let capture_description_clear = {
+        let s = state.borrow();
+        let views = s.preferences.as_ref().unwrap().body.subviews();
+        let description = views.iter().find(|view| {
+            view.downcast_ref::<NSTextField>().is_some_and(|label| {
+                label
+                    .stringValue()
+                    .to_string()
+                    .starts_with("Stream reuses live frames.")
+            })
+        });
+        let permissions: Vec<_> = views
+            .iter()
+            .filter(|view| {
+                view.downcast_ref::<ActionButton>().is_some_and(|button| {
+                    matches!(
+                        button.ivars().action,
+                        Action::Accessibility | Action::ScreenPermission
+                    )
+                })
+            })
+            .collect();
+        permissions.len() == 2
+            && description.is_some_and(|description| {
+                permissions.iter().all(|button| {
+                    !objc2_foundation::NSIntersectsRect(description.frame(), button.frame())
+                })
+            })
+    };
     let previous = state.borrow().config.capture_mode;
     dispatch(state, Action::Cycle("capture_mode".into()));
     let capture_changes = state.borrow().config.capture_mode != previous;
@@ -328,8 +361,9 @@ fn check_system_features(state: &Shared) -> serde_json::Value {
             preferences.panel.close();
         }
     }
-    serde_json::json!({"passed":capture_control && capture_changes && shortcuts_control && shortcut_install_controls && sort_defers && hide && show,
+    serde_json::json!({"passed":capture_control && capture_description_clear && capture_changes && shortcuts_control && shortcut_install_controls && sort_defers && hide && show,
         "capture_control":capture_control,"capture_changes":capture_changes,"shortcuts_control":shortcuts_control,
+        "capture_description_clear":capture_description_clear,
         "shortcut_install_controls":shortcut_install_controls,
         "sort_defers_until_snapshot":sort_defers,"hide_all":hide,"show_all":show})
 }

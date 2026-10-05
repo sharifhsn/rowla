@@ -33,8 +33,15 @@ jobs:
       - run: scripts/build.sh
       - run: python3 scripts/check-compatibility.py dist/Rowla.app
       - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
-      - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --benchmark-ui 10
+      - run: python3 scripts/check-native-ui.py dist/Rowla.app
         timeout-minutes: 2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: Rowla-${{ matrix.os }}-native-ui-log
+          path: dist/ui-check/
+          if-no-files-found: ignore
+          retention-days: 7
       - run: python3 -m unittest discover -s tests -v
         env:
           TASKBAR_TEST_BUNDLE: ${{ github.workspace }}/dist/Rowla.app

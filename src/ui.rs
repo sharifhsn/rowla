@@ -2843,11 +2843,12 @@ fn build_preferences(state: &Shared, page: usize) {
         body.addSubview(&button);
         y -= 44.0;
         let text = label(
-            "Stream reuses live frames. Snapshot captures one image per refresh. Both keep the same cache limit.",
+            "Stream reuses live frames. Snapshot captures one image per refresh.\nBoth methods keep the same cache limit.",
             rect(8.0, y - 26.0, 730.0, 50.0),
             13.0,
         );
         body.addSubview(&text);
+        y -= 68.0;
     }
     if page == 1 || page == 0 || page == 7 {
         let (k, v) = match page {
@@ -3256,6 +3257,9 @@ fn run_mode(
     benchmark: Option<usize>,
     hover: Option<(usize, i32)>,
 ) -> Result<(), String> {
+    if benchmark.is_some() {
+        eprintln!("Native UI check: initialize AppKit");
+    }
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -3376,6 +3380,9 @@ fn run_mode(
     item.setSubmenu(Some(&application));
     main.addItem(&item);
     app.setMainMenu(Some(&main));
+    if benchmark.is_some() {
+        eprintln!("Native UI check: enter application event loop");
+    }
     autoreleasepool(|_| app.run());
     if (benchmark.is_some() || hover.is_some()) && !state.borrow().error.is_empty() {
         return Err(state.borrow().error.clone());
