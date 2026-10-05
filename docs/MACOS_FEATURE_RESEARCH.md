@@ -127,6 +127,7 @@ Source: [native capture state](https://developer.apple.com/documentation/screenc
 The 0.2 source implements capture lifecycle feedback, cooperative activation, optional snapshot capture, compact metrics, and capture-state diagnostics.
 Snapshot capture remains selectable, with Stream as the default. Newer metrics and capture-state APIs use runtime checks.
 Signed URL-based shortcuts provide explicit Sort, Show, and Hide controls without a Swift runtime or resident helper.
+
 The App Intents prototype was discoverable locally, but actual invocation failed with a helper communication error under the available signing setup.
 It is omitted from this beta. Native App Intents and direct action discovery remain candidates for a future release with verified signing and invocation.
 

@@ -8,7 +8,7 @@ The first beta uses a persistent development certificate. Apple did not notarize
 1. Complete the checks in [CONTRIBUTING.md](../CONTRIBUTING.md).
 2. Use a build number greater than all previous public builds.
 3. Build the app with the chosen certificate.
-4. Do the native checks on that fixed bundle. Include the binary-floor check and actions extension.
+4. Do the native checks on that fixed bundle. Include the binary-floor check and signed shortcut imports.
 5. Package the same bundle without another build or signature change.
 
 ```sh

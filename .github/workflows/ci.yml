@@ -34,6 +34,7 @@ jobs:
       - run: python3 scripts/check-compatibility.py dist/Rowla.app
       - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
       - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --benchmark-ui 10
+        timeout-minutes: 2
       - run: python3 -m unittest discover -s tests -v
         env:
           TASKBAR_TEST_BUNDLE: ${{ github.workspace }}/dist/Rowla.app

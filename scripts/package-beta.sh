@@ -22,9 +22,14 @@ architectures = subprocess.check_output(['lipo', '-archs', str(app / 'Contents/M
 if architectures != ['arm64']:
     raise SystemExit('This beta release supports Apple Silicon only')
 resources = app / 'Contents/Resources'
-allowed = {'AppIcon.icns', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'Sparkle-LICENSE', 'licenses'}
+allowed = {'AppIcon.icns', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'Sparkle-LICENSE', 'licenses', 'shortcuts'}
 if set(p.name for p in resources.iterdir()) != allowed:
-    raise SystemExit('Public resources must contain only the user guide, icon, and license notices')
+    raise SystemExit('Public resources must contain only the guide, icon, license notices, and shortcuts')
+shortcuts = resources / 'shortcuts'
+expected = {f'Rowla {name}.shortcut' for name in ['Sort Windows', 'Show Taskbars', 'Hide Taskbars']}
+if set(p.name for p in shortcuts.iterdir()) != expected or any(
+        not p.is_file() or p.is_symlink() or not p.stat().st_size for p in shortcuts.iterdir()):
+    raise SystemExit('The three signed shortcut import files are required')
 for name in ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'Sparkle-LICENSE']:
     if not (resources / name).stat().st_size:
         raise SystemExit('A required public resource is empty')

@@ -67,12 +67,14 @@ A minimized window retains its last image with either method.
 3. Review the URL and Open URLs actions, then select **Add Shortcut** in Shortcuts.
 4. Assign a keyboard shortcut through the Shortcuts details if you want one.
 
+On first use, macOS can ask for permission to open Rowla. Select **Allow** for that shortcut.
+
 Sort applies your order after Rowla receives its window list.
 Show restores all bars. Hide hides all bars and enables the menu-bar icon for restoration.
+
 The saved shortcuts can run from Spotlight. They start Rowla if necessary.
 Each shortcut opens one local URL. It does not run a shell command or need Apple Intelligence.
 You can also use an Open URLs action with `rowla://sort`, `rowla://show`, or `rowla://hide`.
-
 
 ## Preferences and privacy
 

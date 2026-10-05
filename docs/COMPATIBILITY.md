@@ -19,6 +19,7 @@ The original 0.1 beta retains its macOS 26 requirement and unchanged release fil
 CI exercises native UI fixtures and required selector availability without capture or Accessibility permissions.
 CI does not establish first-launch grants, application-specific controls, displays, Spaces, or daily-use reliability.
 A macOS 15 runner does not prove behavior on the exact 15.2 point release.
+The [0.2 QA record](QA_0_2.md) gives local control, capture, shortcut, and memory results.
 
 ## Binary requirements
 

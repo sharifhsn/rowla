@@ -9,6 +9,8 @@
 			<string>is.workflow.actions.url</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
+				<key>UUID</key>
+				<string>B5B13485-AF62-54B2-B7FB-F3E2BABB20FF</string>
 				<key>WFURLActionURL</key>
 				<string>rowla://sort</string>
 			</dict>
@@ -17,7 +19,22 @@
 			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.openurl</string>
 			<key>WFWorkflowActionParameters</key>
-			<dict/>
+			<dict>
+				<key>WFInput</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>OutputName</key>
+						<string>URL</string>
+						<key>OutputUUID</key>
+						<string>B5B13485-AF62-54B2-B7FB-F3E2BABB20FF</string>
+						<key>Type</key>
+						<string>ActionOutput</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+				</dict>
+			</dict>
 		</dict>
 	</array>
 	<key>WFWorkflowClientVersion</key>
