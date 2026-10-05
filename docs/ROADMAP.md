@@ -14,9 +14,23 @@ The current beta supports Apple Silicon and macOS 26+. Intel builds pass CI, but
 | Discoverability | Users can see the workflow before installation | A short demo from synthetic fixture windows with no private desktop content |
 
 Notarization and a future Homebrew cask need a stable distribution process and owner approval.
-The [compatibility review](COMPATIBILITY.md) identifies macOS 14 as a plausible next target. Older support still needs a complete API audit and runtime checks.
+The [feature assessment](MACOS_FEATURE_RESEARCH.md) recommends macOS 15.2+ for the next public compatibility release.
+macOS 14 remains a plausible technical target. Older support still needs a complete API audit and runtime checks.
 Automatic updates need a signed public feed.
 These are proposals rather than current capabilities.
+
+## macOS API experiments
+
+The [assessment](MACOS_FEATURE_RESEARCH.md#highest-value-experiments) gives evidence, introduction versions, and limits for these proposals:
+
+1. Review cooperative app activation for the intermittent click failures.
+2. Compare single-image capture against the current stream for latency and memory.
+3. Add macOS 15.2 capture lifecycle feedback.
+4. Use macOS 26 compact metrics where native controls need them.
+5. Expose explicit Sort and taskbar visibility actions through Shortcuts and Spotlight.
+6. Add optional macOS 27 capture-state diagnostics.
+
+Preserve the bounded capture design. No performance improvement is established until measurements show it.
 
 ## First contributions
 

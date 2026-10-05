@@ -35,6 +35,7 @@ Built for people who keep many windows open and want a predictable place to find
 Sort acts when you click it. It gives you a way to reset a busy window strip to a familiar order.
 Close controls close the selected window. They do not quit its application.
 Read the [capability tables](docs/CAPABILITIES.md) for access paths, defaults, permissions, and application-specific limits.
+Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for proposed additions and the recommended next compatibility target.
 
 ## Install
 

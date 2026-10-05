@@ -6,7 +6,8 @@
 | --- | --- |
 | macOS 26+ on Apple Silicon | Public beta ZIP. Current local development and native checks use macOS 26 |
 | macOS 26+ on Intel | Source builds and CI pass. No Intel beta ZIP or independent daily-use validation |
-| macOS 14 and 15 | Plausible next targets from the API review. No supported download or runtime validation yet |
+| macOS 15.2+ | Recommended target for the next public compatibility release. No supported download or runtime validation yet |
+| macOS 14 | Plausible technical minimum. No supported download or runtime validation yet |
 | macOS 13 | Needs capture changes and a full compatibility review. No supported download |
 | macOS 12 or earlier | Needs more capture/login compatibility work and a framework audit. No supported download |
 | Linux | Portable Rust configuration/model tests. No taskbar GUI |
@@ -44,6 +45,15 @@ The unguarded shadow property makes macOS 14 a reasonable first compatibility ta
 That is an engineering inference, rather than a complete API audit or a claim of supported macOS 14 behavior.
 Optional private window/Spaces functions and framework dependencies also need checks on each target OS.
 The embedded Sparkle framework declares macOS 12.0 as its minimum. It does not explain the macOS 26 floor.
+
+## Recommended next public minimum
+
+The [feature assessment](MACOS_FEATURE_RESEARCH.md) recommends **macOS 15.2+** for the next public release.
+It compares macOS 27 through 12.3, with Apple sources and exact API introduction versions.
+macOS 15.2 adds capture lifecycle callbacks, and Apple's latest update batch includes Sequoia.
+macOS 14 remains a plausible technical target, but its public support needs a separate maintenance decision.
+Optional macOS 26/27 additions do not need to raise the minimum for the entire app.
+This recommendation does not change the current download's macOS 26 requirement.
 
 ## What older support needs
 
