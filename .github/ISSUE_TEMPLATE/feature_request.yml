@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest an improvement to Rowla.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the task that you want Rowla to help you complete.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true

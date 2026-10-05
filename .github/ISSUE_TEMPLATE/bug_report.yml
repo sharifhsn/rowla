@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem with Rowla.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove personal information before you attach screenshots or diagnostics. This report is public.
+  - type: input
+    id: version
+    attributes:
+      label: Rowla version
+      placeholder: 0.1.0-beta.1
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: input
+    id: application
+    attributes:
+      label: Affected application
+      description: Include its version if available.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the actions that cause the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
