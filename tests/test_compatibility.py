@@ -1,6 +1,5 @@
 """Bundle-floor regressions without native binaries or system changes."""
 import importlib.util
-import json
 from pathlib import Path
 import plistlib
 import tempfile
@@ -19,17 +18,10 @@ class CompatibilityTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.app = Path(self.directory.name) / "Rowla.app"
-        self.extension = self.app / "Contents/Extensions/RowlaActions.appex"
         self.info = {"LSMinimumSystemVersion": "15.2", "CFBundleVersion": "2", "CFBundleShortVersionString": "0.2.0"}
-        for bundle, name in [(self.app, "taskbar-rs"), (self.extension, "RowlaActions")]:
-            (bundle / "Contents/MacOS").mkdir(parents=True)
-            (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
-            (bundle / "Contents/MacOS" / name).write_bytes(b"\xcf\xfa\xed\xfe")
-        metadata = self.extension / "Contents/Resources/Metadata.appintents"
-        metadata.mkdir(parents=True)
-        (metadata / "extract.actionsdata").write_text(json.dumps({"actions": {
-            name: {} for name in ["SortWindowsIntent", "ShowTaskbarsIntent", "HideTaskbarsIntent"]
-        }}))
+        (self.app / "Contents/MacOS").mkdir(parents=True)
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
+        (self.app / "Contents/MacOS/taskbar-rs").write_bytes(b"\xcf\xfa\xed\xfe")
         self.floor = "15.2"
         self.architectures = "arm64"
         self.build_commands = None
@@ -60,10 +52,10 @@ class CompatibilityTests(unittest.TestCase):
         self.build_commands = "cmd LC_VERSION_MIN_MACOSX\n cmdsize 16\n version 15.2\n sdk 27.0\n"
         self.assertTrue(self.check()["passed"])
 
-    def test_inconsistent_extension_version_is_rejected(self):
-        self.info["CFBundleShortVersionString"] = "0.1.0"
-        (self.extension / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
-        with self.assertRaisesRegex(ValueError, "versions differ"):
+    def test_bundle_floor_must_match_the_binary(self):
+        self.info["LSMinimumSystemVersion"] = "26.0"
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
+        with self.assertRaisesRegex(ValueError, "must declare macOS 15.2"):
             self.check()
 
 

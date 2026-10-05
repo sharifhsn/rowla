@@ -124,9 +124,11 @@ Source: [native capture state](https://developer.apple.com/documentation/screenc
 
 ## Implementation selection
 
-The 0.2 source implements all six experiments in the highest-value list.
+The 0.2 source implements capture lifecycle feedback, cooperative activation, optional snapshot capture, compact metrics, and capture-state diagnostics.
 Snapshot capture remains selectable, with Stream as the default. Newer metrics and capture-state APIs use runtime checks.
-A separate App Intents extension provides the three explicit actions without a Swift runtime in the taskbar process.
+Signed URL-based shortcuts provide explicit Sort, Show, and Hide controls without a Swift runtime or resident helper.
+The App Intents prototype was discoverable locally, but actual invocation failed with a helper communication error under the available signing setup.
+It is omitted from this beta. Native App Intents and direct action discovery remain candidates for a future release with verified signing and invocation.
 
 The preview bezel remains compact and inexpensive. Liquid Glass needs a visual benefit and measured resource budget before adoption.
 Video, HDR, microphone capture, language models, and touch-specific features have no established need in this workflow.
@@ -134,7 +136,7 @@ Video, HDR, microphone capture, language models, and touch-specific features hav
 ## Compatibility validation
 
 The [compatibility checklist](COMPATIBILITY.md#what-older-support-needs) remains necessary.
-The executable, app bundle, and actions extension now declare macOS 15.2.
+The executable and app bundle now declare macOS 15.2.
 CI includes macOS 15 and 26 on Apple Silicon and Intel. Permission-dependent checks still need a desktop device.
 
 Newer Objective-C classes and selectors need availability checks before use on an older OS.

@@ -30,7 +30,7 @@ Built for people who keep many windows open and want a predictable place to find
 | **Start** | Searches installed apps, with pinned/recent lists and arrow-key navigation. |
 | **Window context menu** | Provides minimize/restore, fullscreen, app hide/quit, pins, and exclusions. |
 | **Display and Space behavior** | Provides per-display bars and current-Space window visibility. Can show all display windows on every bar. |
-| **Shortcuts and Spotlight** | Provides explicit Sort Windows, Show Taskbars, and Hide Taskbars actions. Spotlight actions need macOS 26+. |
+| **Shortcuts** | Includes install buttons for Sort Windows, Show Taskbars, and Hide Taskbars. Run the saved shortcuts with a keyboard shortcut or Spotlight. |
 | **Appearance and optional system controls** | Provides themes, scale, fonts, transparency, login registration, Dock hiding, and overlap resize. |
 
 Sort acts when you click it. It gives you a way to reset a busy window strip to a familiar order.
@@ -77,7 +77,7 @@ Please read the [community conduct policy](CODE_OF_CONDUCT.md). Remove private i
 
 ## Build from source
 
-Use macOS 15.2+, Xcode 16 or later, Python 3, and [Rust through rustup](https://rustup.rs/).
+Use macOS 15.2+, Xcode Command Line Tools, Python 3, and [Rust through rustup](https://rustup.rs/).
 The repository pins Rust 1.96.0 and all Cargo dependencies.
 
 ```sh

@@ -15,7 +15,7 @@ Official downloads and support: <https://github.com/sharifhsn/rowla>
 
 This is a free beta with a persistent development signature. Apple did not notarize this release. macOS can block first launch until you approve this specific app. Automatic updates are disabled. Use manual downloads for later beta versions.
 
-The executable, actions extension, and app manifest all set a macOS 15.2 minimum. Newer optional APIs use runtime availability checks.
+The executable and app manifest both set a macOS 15.2 minimum. Newer optional APIs use runtime availability checks.
 Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBILITY.md) for the API review and older-version limits.
 
 ## Installation
@@ -63,17 +63,16 @@ A minimized window retains its last image with either method.
 ## Shortcuts and Spotlight
 
 1. Open Preferences → Menubar.
-2. Select **Open Shortcuts**.
-3. Create a shortcut and search for **Rowla** in the action list.
-4. Add **Sort Windows**, **Show Taskbars**, or **Hide Taskbars**.
-5. Assign a keyboard shortcut through the Shortcuts details if you want one.
+2. Select **Install Sort Shortcut…**, **Install Show Shortcut…**, or **Install Hide Shortcut…**.
+3. Review the URL and Open URLs actions, then select **Add Shortcut** in Shortcuts.
+4. Assign a keyboard shortcut through the Shortcuts details if you want one.
 
-Sort Windows applies your order after Rowla receives its window list.
-Show Taskbars restores all bars. Hide Taskbars hides all bars, with the menu-bar icon available for restoration.
+Sort applies your order after Rowla receives its window list.
+Show restores all bars. Hide hides all bars and enables the menu-bar icon for restoration.
+The saved shortcuts can run from Spotlight. They start Rowla if necessary.
+Each shortcut opens one local URL. It does not run a shell command or need Apple Intelligence.
+You can also use an Open URLs action with `rowla://sort`, `rowla://show`, or `rowla://hide`.
 
-The actions start Rowla if necessary. They do not index window titles or need Apple Intelligence.
-On macOS 26+, Spotlight can discover these actions. Search for an action name in Spotlight.
-macOS controls action discovery and can need time after installation.
 
 ## Preferences and privacy
 

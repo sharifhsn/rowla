@@ -67,6 +67,7 @@ enum Action {
     ShowBars,
     HideBars,
     OpenShortcuts,
+    InstallShortcut(crate::system_actions::SystemAction),
     Accessibility,
     ScreenPermission,
     Reset,
@@ -1441,6 +1442,17 @@ fn dispatch(state: &Shared, a: Action) {
                 "launchOrActivateApp".into(),
             ));
         }
+        Action::InstallShortcut(action) => {
+            if let Some(resources) = objc2_foundation::NSBundle::mainBundle().resourceURL() {
+                let path = resources.URLByAppendingPathComponent(&NSString::from_str(&format!(
+                    "shortcuts/{}.shortcut",
+                    action.shortcut_name()
+                )));
+                if let Some(path) = path {
+                    NSWorkspace::sharedWorkspace().openURL(&path);
+                }
+            }
+        }
         Action::AddOrderApp => {
             let display = state.borrow().bars.first().map(|b| b.display).unwrap_or(0);
             if let Some(menu) = state.borrow_mut().start.take() {
@@ -2693,15 +2705,41 @@ fn build_preferences(state: &Shared, page: usize) {
         );
         body.addSubview(&hide);
         y -= 60.0;
-        let title = label("Shortcuts and Spotlight", rect(8.0, y, 730.0, 28.0), 18.0);
+        let title = label("Shortcuts", rect(8.0, y, 730.0, 28.0), 18.0);
         body.addSubview(&title);
         y -= 65.0;
         let text = label(
-            "In Shortcuts, add a Rowla action: Sort Windows, Show Taskbars, or Hide Taskbars.\nOn macOS 26+, these actions also work in Spotlight.",
+            "Install the shortcuts below, then select Add Shortcut in Shortcuts.\nAssign a keyboard shortcut or run them from Spotlight. Each opens one local Rowla URL.",
             rect(8.0, y, 730.0, 52.0),
             13.0,
         );
         body.addSubview(&text);
+        y -= 44.0;
+        for (index, action, title) in [
+            (
+                0,
+                crate::system_actions::SystemAction::Sort,
+                "Install Sort Shortcut…",
+            ),
+            (
+                1,
+                crate::system_actions::SystemAction::Show,
+                "Install Show Shortcut…",
+            ),
+            (
+                2,
+                crate::system_actions::SystemAction::Hide,
+                "Install Hide Shortcut…",
+            ),
+        ] {
+            let button = ActionButton::new(
+                state,
+                Action::InstallShortcut(action),
+                title,
+                rect(8.0 + index as f64 * 244.0, y, 236.0, 32.0),
+            );
+            body.addSubview(&button);
+        }
         y -= 44.0;
         let shortcuts = ActionButton::new(
             state,

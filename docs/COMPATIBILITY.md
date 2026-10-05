@@ -3,7 +3,7 @@
 ## Current distribution
 
 The 0.2 release sets **macOS 15.2+** as its minimum. The public beta ZIP supports Apple Silicon.
-The executable, app manifest, and separate actions extension all declare 15.2.
+The executable and app manifest both declare 15.2.
 The original 0.1 beta retains its macOS 26 requirement and unchanged release files.
 
 | Target | Coverage |
@@ -24,11 +24,9 @@ A macOS 15 runner does not prove behavior on the exact 15.2 point release.
 
 - [.cargo/config.toml](../.cargo/config.toml) sets `MACOSX_DEPLOYMENT_TARGET = "15.2"`.
 - [scripts/Info.plist](../scripts/Info.plist) sets `LSMinimumSystemVersion` to `15.2`.
-- [native/Info.plist](../native/Info.plist) sets the extension minimum to `15.2`.
-- [scripts/build-intents.sh](../scripts/build-intents.sh) compiles the Swift extension for 15.2 on each requested architecture.
 
 [scripts/check-compatibility.py](../scripts/check-compatibility.py) examines every bundled Mach-O binary and architecture.
-It rejects higher minimum versions, inconsistent app/extension versions, and absent actions metadata.
+It rejects higher minimum versions, inconsistent executable/bundle floors, and missing architecture floors.
 The embedded Sparkle framework and helpers declare macOS 12.0. They do not raise Rowla's floor.
 The native `--check-compatibility` command checks required selectors on the current OS without permission prompts.
 
@@ -39,13 +37,11 @@ The native `--check-compatibility` command checks required selectors on the curr
 | ScreenCaptureKit single-window filter | 12.3 | Selects a window for capture |
 | `SCStreamConfiguration.capturesAudio` | 13.0 | Disables audio |
 | `SMAppService` | 13.0 | Optional start at login |
-| App Intents extension | 13.0 | Sort, Show, and Hide actions in Shortcuts |
 | Cooperative activation | 14.0 | Click activation and application launch |
 | `ignoreShadowsSingleWindow` | 14.0 | Removes shadows from capture |
 | `SCScreenshotManager.captureImage` | 14.0 | Optional Snapshot preview method |
 | Capture active/inactive callbacks | 15.2 | Handles unavailable capture sources |
 | Compact native control metrics | 26.0 | Optional Preferences layout, runtime checked |
-| Spotlight action discovery | 26.0 | System discovery of the same App Intents |
 | `SCStream.isCapturing` | 27.0 | Optional diagnostics, runtime checked |
 
 The [feature assessment](MACOS_FEATURE_RESEARCH.md) gives Apple sources and the selection rationale.
@@ -62,7 +58,7 @@ The 0.2 release changes the binary floor and adds compatibility gates, with matc
 ## What older support needs
 
 1. Audit each native symbol, selector, and dependency for the target OS.
-2. Set consistent executable, extension, and bundle minimum versions.
+2. Set consistent executable and bundle minimum versions.
 3. Examine every bundled binary on each architecture.
 4. Exercise permissions, previews, and disposable window controls on the target OS.
 5. Exercise minimized windows, displays, Spaces, sleep/wake, and denied permissions.

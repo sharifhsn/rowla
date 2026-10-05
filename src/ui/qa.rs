@@ -288,6 +288,28 @@ fn check_system_features(state: &Shared) -> serde_json::Value {
             view.downcast_ref::<ActionButton>()
                 .is_some_and(|button| button.ivars().action == Action::OpenShortcuts)
         });
+    let shortcut_install_controls = [
+        crate::system_actions::SystemAction::Sort,
+        crate::system_actions::SystemAction::Show,
+        crate::system_actions::SystemAction::Hide,
+    ]
+    .iter()
+    .all(|action| {
+        state
+            .borrow()
+            .preferences
+            .as_ref()
+            .unwrap()
+            .body
+            .subviews()
+            .iter()
+            .any(|view| {
+                view.downcast_ref::<ActionButton>().is_some_and(|button| {
+                    button.ivars().action == Action::InstallShortcut(*action)
+                        && button.frame().origin.y >= 0.0
+                })
+            })
+    });
     state.borrow_mut().received_snapshot = false;
     system_action(state, crate::system_actions::SystemAction::Sort);
     let sort_defers = state.borrow().pending_system_sort && !state.borrow().received_snapshot;
@@ -306,8 +328,9 @@ fn check_system_features(state: &Shared) -> serde_json::Value {
             preferences.panel.close();
         }
     }
-    serde_json::json!({"passed":capture_control && capture_changes && shortcuts_control && sort_defers && hide && show,
+    serde_json::json!({"passed":capture_control && capture_changes && shortcuts_control && shortcut_install_controls && sort_defers && hide && show,
         "capture_control":capture_control,"capture_changes":capture_changes,"shortcuts_control":shortcuts_control,
+        "shortcut_install_controls":shortcut_install_controls,
         "sort_defers_until_snapshot":sort_defers,"hide_all":hide,"show_all":show})
 }
 

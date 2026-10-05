@@ -1,11 +1,19 @@
 //! Three explicit system actions; URLs cannot select or close arbitrary windows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SystemAction {
     Sort,
     Show,
     Hide,
 }
 impl SystemAction {
+    pub(crate) fn shortcut_name(self) -> &'static str {
+        match self {
+            Self::Sort => "Rowla Sort Windows",
+            Self::Show => "Rowla Show Taskbars",
+            Self::Hide => "Rowla Hide Taskbars",
+        }
+    }
+
     pub(crate) fn from_url(url: &str) -> Option<Self> {
         match url {
             "rowla://sort" | "rowla://sort/" => Some(Self::Sort),

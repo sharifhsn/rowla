@@ -66,7 +66,7 @@ Browser content tabs remain under the browser's control. Rowla does not provide 
 | Start at login | Preferences → Taskbar | Off for fresh preferences. macOS controls login registration and can require approval |
 | Dock replacement option | Preferences → Advanced | Off for fresh preferences. Fully hides the Dock while Rowla runs. Quit restores its saved Dock values. After a crash, the next launch restores them |
 | Avoid bar overlap | Preferences → Advanced | Optional automatic resize of overlapping windows. Off for fresh preferences. Needs Accessibility |
-| System actions | Preferences → Menubar → Open Shortcuts | Provides Sort Windows, Show Taskbars, and Hide Taskbars. Spotlight discovers actions on macOS 26+. The extension starts for explicit actions |
+| System actions | Preferences → Menubar → Install Shortcut… | Installs Sort, Show, and Hide shortcuts. Each opens one local URL. Run saved shortcuts with a keyboard shortcut or Spotlight |
 | Compact native controls | Automatic, macOS 26+ | Uses native compact metrics in Preferences. Older systems use the existing layout |
 | Local diagnostics | About or context menu → Save Diagnostics | Records aggregate counts, timings, capability flags, and errors. macOS 27 adds optional native capture-state data. Remove private data before a public attachment |
 | Local crash reports | Preferences → Policies | Controls local reports. Rowla has no remote crash-report service |

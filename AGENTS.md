@@ -17,7 +17,7 @@ State which checks you completed and which native behavior you did not exercise.
 
 ## Environment and commands
 
-The app needs macOS 15.2+, Xcode 16 or later, Python 3, and rustup.
+The app needs macOS 15.2+, Xcode Command Line Tools, Python 3, and rustup.
 `rust-toolchain.toml` pins Rust 1.96.0. `Cargo.lock` pins the dependency graph.
 Use two Cargo jobs by default to limit build resource use.
 
@@ -51,7 +51,7 @@ No Node or JavaScript runtime is necessary.
 - Keep thumbnail bitmaps within 16 MiB and 32 entries. Native stream buffers use more memory.
 - Keep one native capture operation. Stream mode uses a three-buffer queue.
 - Do not start a stream or snapshot while a previous native operation is unconfirmed.
-- Keep the Swift actions extension separate. Do not load it into the taskbar or create an always-on helper.
+- Keep system actions explicit and local. Do not add a resident helper for shortcuts.
 - Check newer optional selectors before use. Keep every bundled binary compatible with macOS 15.2.
 - Preserve bounded queues, deadlines, failure backoff, and cancellation of obsolete replies.
 - Keep public models free of native pointers and capture buffers.
