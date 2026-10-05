@@ -14,7 +14,8 @@ The current beta supports Apple Silicon and macOS 26+. Intel builds pass CI, but
 | Discoverability | Users can see the workflow before installation | A short demo from synthetic fixture windows with no private desktop content |
 
 Notarization and a future Homebrew cask need a stable distribution process and owner approval.
-Older macOS support needs an API review and independent tests. Automatic updates need a signed public feed.
+The [compatibility review](COMPATIBILITY.md) identifies macOS 14 as a plausible next target. Older support still needs a complete API audit and runtime checks.
+Automatic updates need a signed public feed.
 These are proposals rather than current capabilities.
 
 ## First contributions

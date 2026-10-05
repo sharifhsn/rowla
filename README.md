@@ -16,6 +16,8 @@ Built for people who keep many windows open and want a predictable place to find
 > **Beta:** macOS 26+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
 > macOS can require **Open Anyway** on first launch. Updates use manual downloads.
 
+[Why macOS 26?](docs/COMPATIBILITY.md#why-the-beta-says-macos-26) · [Full capabilities and limits](docs/CAPABILITIES.md)
+
 ## Your windows, in your order
 
 | Control | What it does |
@@ -25,10 +27,14 @@ Built for people who keep many windows open and want a predictable place to find
 | **Hover preview** | Shows a cached thumbnail immediately. A fresh capture needs time. |
 | **Hover ⌘W** or the small **×** | Closes that window, including minimized windows. The app can ask you to save changes. |
 | **Pinned apps** | Shows launch icons when the app has no discovered window. |
-| **Start and Preferences** | Provides app search, drag reorder, appearance controls, and display/Space filters. |
+| **Start** | Searches installed apps, with pinned/recent lists and arrow-key navigation. |
+| **Window context menu** | Provides minimize/restore, fullscreen, app hide/quit, pins, and exclusions. |
+| **Display and Space behavior** | Provides per-display bars and current-Space window visibility. Can show all display windows on every bar. |
+| **Appearance and optional system controls** | Provides themes, scale, fonts, transparency, login registration, Dock hiding, and overlap resize. |
 
 Sort acts when you click it. It gives you a way to reset a busy window strip to a familiar order.
 Close controls close the selected window. They do not quit its application.
+Read the [capability tables](docs/CAPABILITIES.md) for access paths, defaults, permissions, and application-specific limits.
 
 ## Install
 

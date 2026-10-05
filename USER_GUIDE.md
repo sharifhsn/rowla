@@ -8,12 +8,15 @@ Official downloads and support: <https://github.com/sharifhsn/rowla>
 
 ## Requirements
 
-- macOS 26 or later.
-- Apple Silicon: M1 or later. This beta does not include Intel support.
+- macOS 26 or later for the current beta download.
+- Apple Silicon: M1 or later for the beta ZIP. Intel source builds pass CI, but live controls need independent validation.
 - Accessibility permission for window discovery and controls.
 - Optional Screen Recording permission for thumbnails.
 
 This is a free beta with a persistent development signature. Apple did not notarize this release. macOS can block first launch until you approve this specific app. Automatic updates are disabled. Use manual downloads for later beta versions.
+
+The current build and app manifest explicitly set macOS 26. The API review found no macOS 26-only requirement in the main features.
+Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBILITY.md) for the API review and older-version limits.
 
 ## Installation
 
@@ -49,7 +52,11 @@ Cached thumbnails appear immediately. A first capture needs time. Rowla retains 
 
 ## Preferences and privacy
 
-You can change the appearance, bar scale, display and Space filters, pins, thumbnails, and window behavior in Preferences. Start at login and automatic window resizing are off for a new configuration. Enable them in Preferences if you want them.
+Preferences controls appearance, bar scale, display layout, window visibility, pins, thumbnails, and window behavior.
+Rowla automatically follows active Spaces. Its all-Spaces indicator marks window assignments, rather than a user-selectable Space filter.
+Start at login and automatic window resizing are off for a new configuration. Enable them in Preferences if you want them.
+
+The [full capability list](https://github.com/sharifhsn/rowla/blob/main/docs/CAPABILITIES.md) gives access paths, defaults, permissions, and limitations for each feature.
 
 Rowla needs no account. It has no telemetry, advertising, or remote crash reports. Window previews stay in memory. Rowla does not save or transmit the preview images. The thumbnail cache has a 16 MiB and 32-image limit. Native capture buffers use additional memory.
 
