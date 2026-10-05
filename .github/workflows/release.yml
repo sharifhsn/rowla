@@ -1,0 +1,49 @@
+name: Prepare signed release
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Integer greater than every shipped build
+        required: true
+        type: string
+      first_release:
+        description: No public feed exists yet
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo fmt --all --check && cargo test --locked --all-targets && cargo clippy --locked --all-targets -- -D warnings
+      - name: Sign, notarize, staple, verify and test
+        run: scripts/ci-release.sh
+        env:
+          TASKBAR_BUILD_NUMBER: ${{ inputs.build_number }}
+          TASKBAR_FIRST_RELEASE: ${{ inputs.first_release }}
+          TASKBAR_SIGNING_IDENTITY: ${{ vars.TASKBAR_SIGNING_IDENTITY }}
+          TASKBAR_RELEASE_BASE_URL: https://github.com/${{ vars.TASKBAR_RELEASE_REPO }}/releases/download/build-${{ inputs.build_number }}
+          TASKBAR_UPDATE_FEED_URL: https://github.com/${{ vars.TASKBAR_RELEASE_REPO }}/releases/latest/download/appcast.xml
+          TASKBAR_CERTIFICATE_BASE64: ${{ secrets.TASKBAR_CERTIFICATE_BASE64 }}
+          TASKBAR_CERTIFICATE_PASSWORD: ${{ secrets.TASKBAR_CERTIFICATE_PASSWORD }}
+          TASKBAR_NOTARY_KEY_BASE64: ${{ secrets.TASKBAR_NOTARY_KEY_BASE64 }}
+          TASKBAR_NOTARY_KEY_ID: ${{ secrets.TASKBAR_NOTARY_KEY_ID }}
+          TASKBAR_NOTARY_ISSUER_ID: ${{ secrets.TASKBAR_NOTARY_ISSUER_ID }}
+          TASKBAR_SPARKLE_PRIVATE_KEY: ${{ secrets.TASKBAR_SPARKLE_PRIVATE_KEY }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Rowla-signed-release-${{ inputs.build_number }}
+          path: |
+            dist/Rowla-*.zip
+            dist/appcast.xml
+          retention-days: 14
+# No publication credentials or write permission. Review these artifacts before
+# publishing to this repository's Releases page.

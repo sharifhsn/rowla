@@ -1,3 +1,8 @@
 .DS_Store
+/target/
+/dist/
+/diagnostics/
+/vendor/
+__pycache__/
 /release-assets/
 /validation/

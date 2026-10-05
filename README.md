@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon.png" width="128" alt="Rowla app icon"></p>
+<p align="center"><img src="assets/AppIcon.png" width="128" alt="Rowla app icon"></p>
 
 # Rowla
 
@@ -43,9 +43,31 @@ Cached previews of minimized windows use the last captured image. A window alrea
 
 Updates use manual versioned downloads during the beta. Quit Rowla before you replace its app bundle. Download only from this repository's Releases page.
 
+## Build from source
+
+The complete app source is public under the [MIT license](LICENSE). You can use it, change it, and distribute it.
+The [beta 1 source tag](https://github.com/sharifhsn/rowla/tree/source-v0.1.0-beta.1) contains the runtime code for the current download.
+
+Use macOS 26+, Xcode Command Line Tools, Python 3, and [Rust through rustup](https://rustup.rs/).
+The repository pins Rust 1.96.0 and all Cargo dependencies.
+
+```sh
+git clone https://github.com/sharifhsn/rowla.git
+cd rowla
+scripts/build.sh
+open dist/Rowla.app
+```
+
+The build script downloads Sparkle 2.10.0 and checks its pinned checksum and signature.
+It creates a local app bundle. A fresh build uses an ad-hoc signature and needs no Apple Developer membership.
+Grant the macOS permissions when you first open your build. Ad-hoc builds can need new grants after code changes.
+
+The internal Cargo name remains `taskbar-rs`. The app identifier and preferences path keep compatibility with earlier Taskbar Rust builds.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, code structure, and native tests.
+
 ## Support, privacy, and license
 
-This is the official repository for downloads and public bug reports. Development source is currently private.
+This is the official repository for source code, downloads, and public bug reports. Contributions are welcome through pull requests.
 
 Read the [user guide](USER_GUIDE.md) and [privacy statement](PRIVACY.md). Report problems through [Issues](https://github.com/sharifhsn/rowla/issues). Include the version, macOS version, affected application, and reproduction steps. Remove personal information before you attach diagnostics or screenshots.
 
