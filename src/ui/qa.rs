@@ -1672,7 +1672,7 @@ pub(super) fn hover_tick(state: &Shared) {
             });
         println!(
             "{}",
-            serde_json::json!({"completed":true,"passed":success,"mode":"app_local_mouseEntered_with_native_capture","configured_delay_ms":s.config.hover_ms,"rapid_source_changes":12-test.rapid_remaining,"warmed_sources":test.warmed_sources,"warmup_ms":test.warmup_ms,"samples":test.samples,"performance":s.performance.json(),"cache_bytes":s.preview_cache.bytes(),"error":error,"capture_errors":s.capture_errors,"stream_counts":crate::capture::counts(),"idle_buffers_released":error.is_none()&&test.idle_since.is_some()})
+            serde_json::json!({"completed":true,"passed":success,"mode":"app_local_mouseEntered_with_native_capture","capture_mode":s.config.capture_mode,"capture_features":crate::capture::diagnostics(),"configured_delay_ms":s.config.hover_ms,"rapid_source_changes":12-test.rapid_remaining,"warmed_sources":test.warmed_sources,"warmup_ms":test.warmup_ms,"samples":test.samples,"performance":s.performance.json(),"cache_bytes":s.preview_cache.bytes(),"error":error,"capture_errors":s.capture_errors,"stream_counts":crate::capture::counts(),"idle_buffers_released":error.is_none()&&test.idle_since.is_some()})
         );
         drop(s);
         if !success {

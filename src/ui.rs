@@ -3235,8 +3235,10 @@ fn run_mode(
     config.normalize();
     if hover.is_some() {
         config.hover_ms = 0;
-        if std::env::var("ROWLA_QA_CAPTURE_MODE").is_ok_and(|mode| mode == "snapshot") {
-            config.capture_mode = crate::config::CaptureMode::Snapshot;
+        match std::env::var("ROWLA_QA_CAPTURE_MODE").as_deref() {
+            Ok("snapshot") => config.capture_mode = crate::config::CaptureMode::Snapshot,
+            Ok("stream") => config.capture_mode = crate::config::CaptureMode::Stream,
+            _ => {}
         }
     }
     if smoke.is_none() {

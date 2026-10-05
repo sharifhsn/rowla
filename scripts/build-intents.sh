@@ -32,7 +32,8 @@ for architecture in $architectures; do
     [[ -n "$metadata_arch" ]] || metadata_arch="$architecture"
     xcrun swiftc -O -whole-module-optimization -parse-as-library -application-extension \
         -warnings-as-errors -sdk "$sdk" -target "$architecture-apple-macosx15.2" \
-        -module-name RowlaActions -const-gather-protocols-list "$project_dir/native/const-protocols.json" \
+        -module-name RowlaActions \
+        -Xfrontend -const-gather-protocols-list -Xfrontend "$project_dir/native/const-protocols.json" \
         -emit-const-values-path "$scratch/$architecture.swiftconstvalues" \
         "${sources[@]}" -o "$scratch/$architecture"
     binaries+=("$scratch/$architecture")
