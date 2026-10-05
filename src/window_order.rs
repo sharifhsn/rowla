@@ -1,14 +1,18 @@
 //! Explicit, stable sorting. Focus history retains only living window IDs.
+#[cfg(any(target_os = "macos", test))]
 use crate::models::Window;
+#[cfg(any(target_os = "macos", test))]
 use std::{cmp::Reverse, collections::HashMap, time::Instant};
 
 pub(crate) const MAX_APPS: usize = 128;
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 pub(crate) struct Activity {
     focused: Option<u32>,
     recent: HashMap<u32, (i32, Instant)>,
 }
+#[cfg(any(target_os = "macos", test))]
 impl Activity {
     pub(crate) fn observe(&mut self, windows: &[Window]) {
         let living: HashMap<_, _> = windows.iter().map(|w| (w.id, w.pid)).collect();
@@ -27,11 +31,13 @@ impl Activity {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(PartialEq, Eq, Hash)]
 enum AppKey<'a> {
     Bundle(&'a str),
     Process(i32),
 }
+#[cfg(any(target_os = "macos", test))]
 fn app_key(w: &Window) -> AppKey<'_> {
     if w.bundle.is_empty() {
         AppKey::Process(w.pid)
@@ -40,6 +46,7 @@ fn app_key(w: &Window) -> AppKey<'_> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn sort(
     order: &mut Vec<u32>,
     windows: &[Window],
