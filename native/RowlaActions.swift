@@ -59,3 +59,18 @@ struct HideTaskbarsIntent: AppIntent {
         return .result()
     }
 }
+
+struct RowlaShortcuts: AppShortcutsProvider {
+    static var shortcutTileColor: ShortcutTileColor = .blue
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: SortWindowsIntent(), phrases: ["Sort windows in \(.applicationName)"],
+            shortTitle: "Sort Windows", systemImageName: "arrow.up.arrow.down")
+        AppShortcut(
+            intent: ShowTaskbarsIntent(), phrases: ["Show taskbars in \(.applicationName)"],
+            shortTitle: "Show Taskbars", systemImageName: "rectangle.bottomthird.inset.filled")
+        AppShortcut(
+            intent: HideTaskbarsIntent(), phrases: ["Hide taskbars in \(.applicationName)"],
+            shortTitle: "Hide Taskbars", systemImageName: "eye.slash")
+    }
+}
