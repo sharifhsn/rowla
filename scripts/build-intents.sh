@@ -9,6 +9,15 @@ trap 'rm -rf "$scratch"' EXIT
 sdk="$(xcrun --show-sdk-path)"
 developer_dir="$(xcode-select -p)"
 xcode_version="$(xcodebuild -version | awk '/Build version/{print $3}')"
+swift_options="$(xcrun swiftc -frontend -help-hidden)"
+if [[ "$swift_options" == *'-const-gather-protocols-list'* ]]; then
+    protocol_option='-const-gather-protocols-list'
+elif [[ "$swift_options" == *'-const-gather-protocols-file'* ]]; then
+    protocol_option='-const-gather-protocols-file'
+else
+    printf 'This Swift compiler cannot extract App Intents metadata. Use Xcode 16 or later.\n' >&2
+    exit 1
+fi
 mkdir -p "$extension_dir/Contents/MacOS" "$resources"
 cp "$project_dir/native/Info.plist" "$extension_dir/Contents/Info.plist"
 python3 - "$app_dir" "$extension_dir" <<'PY'
@@ -33,7 +42,7 @@ for architecture in $architectures; do
     xcrun swiftc -O -whole-module-optimization -parse-as-library -application-extension \
         -warnings-as-errors -sdk "$sdk" -target "$architecture-apple-macosx15.2" \
         -module-name RowlaActions \
-        -Xfrontend -const-gather-protocols-list -Xfrontend "$project_dir/native/const-protocols.json" \
+        -Xfrontend "$protocol_option" -Xfrontend "$project_dir/native/const-protocols.json" \
         -emit-const-values-path "$scratch/$architecture.swiftconstvalues" \
         "${sources[@]}" -o "$scratch/$architecture"
     binaries+=("$scratch/$architecture")
