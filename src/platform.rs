@@ -892,6 +892,12 @@ pub(crate) fn benchmark_latency(seconds: u64, fixture: Option<i32>) -> bool {
 
 /// Activate only windows owned by the disposable native QA fixture.
 pub(crate) fn check_fixture_activation(pid: i32) -> bool {
+    // Match the app's passive AppKit context. A command-line process does not
+    // otherwise initialize NSApplication or process activation-state updates.
+    let app = objc2_app_kit::NSApplication::sharedApplication(
+        objc2::MainThreadMarker::new().expect("main thread"),
+    );
+    app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
     autoreleasepool(|_| {
         let mut elements = HashMap::new();
         let initial = scan(&mut elements);
@@ -909,13 +915,21 @@ pub(crate) fn check_fixture_activation(pid: i32) -> bool {
         let inactive_source = !NSRunningApplication::currentApplication().isActive();
         let mut successes = 0;
         let mut max_ms = 0.0f64;
+        let mut error = None;
         if ids.len() == 2 {
             for id in ids.iter().cycle().take(4) {
                 let started = Instant::now();
-                if execute(Command::Activate(*id, false), &elements).is_err() {
+                let (result, status) = crate::ipc_budget::run(Duration::from_millis(160), || {
+                    execute(Command::Activate(*id, false), &elements)
+                });
+                if let Err(message) = result {
+                    error = Some(format!("{message}: {status:?}"));
                     break;
                 }
                 loop {
+                    objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
+                        &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
+                    );
                     let snapshot = scan(&mut elements);
                     let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
                         .frontmostApplication()
@@ -937,7 +951,8 @@ pub(crate) fn check_fixture_activation(pid: i32) -> bool {
         println!(
             "{}",
             serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
-            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,"cf_live":cf_counts().0})
+            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
+            "error":error,"cf_live":cf_counts().0})
         );
         passed
     })
