@@ -30,6 +30,18 @@ jobs:
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: for script in scripts/*.sh; do bash -n "$script"; done
+      # This disposable VM's icon agent crash-loops and blocks AppKit callers.
+      # Stack confirmed in run 37272214059; upstream actions/runner-images#14751.
+      # Keep the native fixtures enabled, using AppKit's generic icon fallback.
+      - name: Use fallback icons on the affected Intel runner
+        if: matrix.os == 'macos-26-intel'
+        run: |
+          runner_uid="$(id -u)"
+          icon_agent="gui/$runner_uid/com.apple.iconservices.iconservicesagent"
+          if launchctl print "$icon_agent" >/dev/null 2>&1; then
+            launchctl bootout "$icon_agent"
+          fi
+          launchctl disable "$icon_agent"
       - run: scripts/build.sh
       - run: python3 scripts/check-compatibility.py dist/Rowla.app
       - run: dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
