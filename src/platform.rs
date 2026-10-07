@@ -344,6 +344,17 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
             if hide {
                 check(set_bool(w.0, ns_string!("AXMinimized"), true))
             } else {
+                let mut pid = 0;
+                unsafe extern "C" {
+                    fn AXUIElementGetPid(el: Ref, pid: *mut i32) -> i32;
+                }
+                let error = unsafe { AXUIElementGetPid(w.0, &mut pid) };
+                if error != 0 {
+                    return Err(format!("Cannot identify window owner: AX {error}"));
+                }
+                // Start the app's unhide/focus transition before AX restore or
+                // raise. A late AX reply must not prevent app activation.
+                check(activate_pid(pid))?;
                 let minimized = bool_attr(w.0, ns_string!("AXMinimized"));
                 if !crate::ipc_budget::healthy() {
                     return Err("Cannot read window state".into());
@@ -355,15 +366,7 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 // Keep its native failure out of the required-action outcome.
                 set_bool_tracking(w.0, ns_string!("AXMain"), true, false);
                 check(action(w.0, ns_string!("AXRaise")))?;
-                let mut pid = 0;
-                unsafe extern "C" {
-                    fn AXUIElementGetPid(el: Ref, pid: *mut i32) -> i32;
-                }
-                let error = unsafe { AXUIElementGetPid(w.0, &mut pid) };
-                if error != 0 {
-                    return Err(format!("Cannot identify window owner: AX {error}"));
-                }
-                check(activate_pid(pid))
+                Ok(())
             }
         }
         Command::Minimize(id) => {
@@ -898,64 +901,7 @@ pub(crate) fn check_fixture_activation(pid: i32) -> bool {
         objc2::MainThreadMarker::new().expect("main thread"),
     );
     app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
-    autoreleasepool(|_| {
-        let mut elements = HashMap::new();
-        let initial = scan(&mut elements);
-        let ids: Vec<_> = initial
-            .windows
-            .iter()
-            .filter(|w| {
-                w.pid == pid
-                    && w.bundle == "io.sharif.taskbarrust.interactionfixture"
-                    && !w.minimized
-            })
-            .map(|w| w.id)
-            .take(2)
-            .collect();
-        let inactive_source = !NSRunningApplication::currentApplication().isActive();
-        let mut successes = 0;
-        let mut max_ms = 0.0f64;
-        let mut error = None;
-        if ids.len() == 2 {
-            for id in ids.iter().cycle().take(4) {
-                let started = Instant::now();
-                let (result, status) = crate::ipc_budget::run(Duration::from_millis(160), || {
-                    execute(Command::Activate(*id, false), &elements)
-                });
-                if let Err(message) = result {
-                    error = Some(format!("{message}: {status:?}"));
-                    break;
-                }
-                loop {
-                    objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
-                        &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
-                    );
-                    let snapshot = scan(&mut elements);
-                    let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
-                        .frontmostApplication()
-                        .is_some_and(|app| app.processIdentifier() == pid);
-                    if frontmost && snapshot.windows.iter().any(|w| w.id == *id && w.focused) {
-                        successes += 1;
-                        max_ms = max_ms.max(started.elapsed().as_secs_f64() * 1000.0);
-                        break;
-                    }
-                    if started.elapsed() > Duration::from_secs(2) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
-        let passed = inactive_source && successes == 4;
-        drop(elements);
-        println!(
-            "{}",
-            serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
-            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
-            "error":error,"cf_live":cf_counts().0})
-        );
-        passed
-    })
+    service::check_fixture_activation(pid)
 }
 
 /// Close only a minimized window from the named disposable QA application.

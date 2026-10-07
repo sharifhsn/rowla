@@ -456,6 +456,11 @@ impl Service {
         let mut live = HashSet::new();
         for app in &running {
             let pid: i32 = unsafe { msg_send![&*app, processIdentifier] };
+            // Native fixture checks need prompt focus reports from their owned
+            // provider. Production discovery has no fixture filter.
+            if self.fixture_pid.is_some_and(|fixture| pid != fixture) {
+                continue;
+            }
             let policy: isize = unsafe { msg_send![&*app, activationPolicy] };
             if (policy != 0 && Some(pid) != self.fixture_pid) || pid == std::process::id() as i32 {
                 continue;
@@ -799,6 +804,94 @@ mod cache_tests {
 pub(super) fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) {
     worker_core(rx, tx, None)
 }
+// Only the latest activation can recover. This holds IDs and times, never AX
+// objects or images. A later control or a change to a third app cancels it.
+struct Activation {
+    id: u32,
+    pid: i32,
+    source: i32,
+    next: Instant,
+    deadline: Instant,
+    attempts: u8,
+}
+impl Activation {
+    fn new(id: u32, pid: i32, source: i32, now: Instant) -> Self {
+        Self {
+            id,
+            pid,
+            source,
+            next: now + Duration::from_millis(40),
+            deadline: now + Duration::from_secs(1),
+            attempts: 1,
+        }
+    }
+    fn permits_front(&self, front: i32) -> bool {
+        front == self.pid || front == self.source || front == std::process::id() as i32
+    }
+    fn can_retry(&self, now: Instant) -> bool {
+        now < self.deadline && self.attempts < 4
+    }
+    fn retried(&mut self, now: Instant) {
+        self.attempts += 1;
+        self.next = now + Duration::from_millis(40 << (self.attempts - 1));
+    }
+}
+fn front_pid() -> i32 {
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map_or(0, |app| app.processIdentifier())
+}
+fn activation_retryable(status: ipc_budget::Status) -> bool {
+    // AXCannotComplete can mean that the action arrived but its reply was late.
+    // Restore/raise are idempotent. Never repeat close, minimize, hide or quit.
+    status.error.is_none_or(|error| error == -25204)
+}
+fn advance_activation(service: &mut Service, pending: &mut Option<Activation>) {
+    let Some(request) = pending.as_mut().filter(|r| Instant::now() >= r.next) else {
+        return;
+    };
+    let front = front_pid();
+    if !request.permits_front(front) {
+        *pending = None;
+        return;
+    }
+    let Some(window) = service.elements.get(&request.id) else {
+        *pending = None;
+        return;
+    };
+    let (focused, _) = ipc_budget::run(Duration::from_millis(20), || {
+        front == request.pid
+            && service.apps.get(&request.pid).is_some_and(|app| {
+                attr(app.root.0, ns_string!("AXFocusedWindow")).is_some_and(|focus| {
+                    // SAFETY: both retained AX elements stay on this worker
+                    // and remain alive throughout the identity comparison.
+                    unsafe { CFEqual(focus.0, window.0) }
+                })
+            })
+    });
+    if focused {
+        *pending = None;
+        service.queue.notify_all();
+        return;
+    }
+    if !request.can_retry(Instant::now()) {
+        service.control_error = Some("The window did not become active".into());
+        *pending = None;
+        return;
+    }
+    let (result, status) = ipc_budget::run(Duration::from_millis(120), || {
+        execute(Command::Activate(request.id, false), &service.elements)
+    });
+    if activation_retryable(status) {
+        request.retried(Instant::now());
+    } else {
+        service.control_error = result
+            .err()
+            .or_else(|| Some(format!("Window activation did not complete: {status:?}")));
+        *pending = None;
+    }
+    service.queue.notify_all();
+}
 fn worker_core(
     rx: Receiver<Command>,
     tx: std::sync::mpsc::SyncSender<Snapshot>,
@@ -807,6 +900,7 @@ fn worker_core(
     let mut service = autoreleasepool(|_| Service::new());
     service.fixture_pid = fixture;
     let mut next_publish = Instant::now();
+    let mut activation: Option<Activation> = None;
     let mut deferred_closes: HashMap<u32, (Instant, Instant)> = HashMap::new();
     // Opening a cold app and Dock changes can involve LaunchServices waits.
     // Their bounded queue never holds up the window-control actor.
@@ -836,6 +930,9 @@ fn worker_core(
                 let _ = reply.send(Instant::now());
             }
             Ok(command @ (Command::Launch(..) | Command::Dock(_))) => {
+                if matches!(command, Command::Launch(..)) {
+                    activation = None;
+                }
                 if slow_tx.try_send(command).is_err() {
                     service.control_error =
                         Some("Application launch queue is busy; try again shortly".into());
@@ -843,6 +940,19 @@ fn worker_core(
             }
             Ok(Command::Close(id)) if deferred_closes.contains_key(&id) => {}
             Ok(command) => {
+                // Discovery and automatic resize cannot supersede a click.
+                // Every other user control cancels recovery of an older target.
+                if !matches!(command, Command::Resize(..)) {
+                    activation = None;
+                }
+                let requested = match command {
+                    Command::Activate(id, false) => service
+                        .apps
+                        .iter()
+                        .find(|(_, app)| app.windows.contains_key(&id))
+                        .map(|(pid, _)| Activation::new(id, *pid, front_pid(), Instant::now())),
+                    _ => None,
+                };
                 let (result, status) = autoreleasepool(|_| {
                     ipc_budget::run(Duration::from_millis(160), || {
                         execute(command, &service.elements)
@@ -852,6 +962,16 @@ fn worker_core(
                     (status.exhausted || status.error.is_some())
                         .then(|| format!("Window control did not complete: {status:?}"))
                 });
+                if requested.is_some() && activation_retryable(status) {
+                    activation = requested.map(|mut request| {
+                        // Keep recovery out of the first command's time slice.
+                        request.next = Instant::now() + Duration::from_millis(40);
+                        request
+                    });
+                    // A transient failure remains pending until actual focus or
+                    // a bounded terminal failure, instead of discarding the click.
+                    service.control_error = None;
+                }
                 if let Ok(Some(id)) = result {
                     if deferred_closes.len() < 32 || deferred_closes.contains_key(&id) {
                         deferred_closes.entry(id).or_insert((
@@ -867,6 +987,7 @@ fn worker_core(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             _ => {}
         }
+        autoreleasepool(|_| advance_activation(&mut service, &mut activation));
         // Wait for native restore completion without blocking other controls.
         if let Some((id, (_, deadline))) = deferred_closes
             .iter()
@@ -915,6 +1036,91 @@ fn worker_core(
             }
         }
     }
+}
+pub(super) fn check_fixture_activation(pid: i32) -> bool {
+    let inactive_source = !NSRunningApplication::currentApplication().isActive();
+    let (tx, rx) = std::sync::mpsc::sync_channel(8);
+    let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || worker_core(rx, snap_tx, Some(pid)));
+    let mut snapshot = Snapshot::default();
+    let pump = |snapshot: &mut Snapshot| {
+        objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
+            &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
+        while let Ok(value) = snap_rx.try_recv() {
+            *snapshot = value;
+        }
+    };
+    let discovery = Instant::now();
+    while snapshot.windows.iter().filter(|w| w.pid == pid).count() < 2
+        && discovery.elapsed() < Duration::from_secs(3)
+    {
+        pump(&mut snapshot);
+    }
+    let ids: Vec<_> = snapshot
+        .windows
+        .iter()
+        .filter(|w| w.pid == pid && w.bundle == "io.sharif.taskbarrust.interactionfixture")
+        .map(|w| w.id)
+        .take(2)
+        .collect();
+    let mut successes = 0;
+    let mut max_ms = 0.0f64;
+    let mut error = None;
+    for id in ids.iter().cycle().take(if ids.len() == 2 { 4 } else { 0 }) {
+        let started = Instant::now();
+        if tx.try_send(Command::Activate(*id, false)).is_err() {
+            error = Some("Fixture control queue is unavailable".into());
+            break;
+        }
+        loop {
+            pump(&mut snapshot);
+            if snapshot.control_error.is_some() {
+                error.clone_from(&snapshot.control_error);
+                break;
+            }
+            // Use the actor's focus report and a fresh owner query. Each case
+            // sends one command through the same recovery path as a UI click.
+            if front_pid() == pid && snapshot.windows.iter().any(|w| w.id == *id && w.focused) {
+                successes += 1;
+                max_ms = max_ms.max(started.elapsed().as_secs_f64() * 1000.0);
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                error = Some("Fixture window did not become active".into());
+                break;
+            }
+        }
+        if error.is_some() {
+            break;
+        }
+    }
+    let mut latest_target_wins = false;
+    if successes == 4 {
+        // A queued click supersedes recovery of the previous window. Wait past
+        // the old retry interval to catch a later unwanted focus change.
+        let queued = tx.try_send(Command::Activate(ids[0], false)).is_ok()
+            && tx.try_send(Command::Activate(ids[1], false)).is_ok();
+        let settle = Instant::now();
+        while settle.elapsed() < Duration::from_secs(1) {
+            pump(&mut snapshot);
+        }
+        latest_target_wins = queued
+            && snapshot.control_error.is_none()
+            && front_pid() == pid
+            && snapshot.windows.iter().any(|w| w.id == ids[1] && w.focused);
+    }
+    let _ = tx.send(Command::Stop);
+    drop(tx);
+    let _ = worker.join();
+    let passed = inactive_source && successes == 4 && latest_target_wins && cf_counts().0 == 0;
+    println!(
+        "{}",
+        serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
+        "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
+        "latest_target_wins":latest_target_wins,"error":error,"cf_live":cf_counts().0})
+    );
+    passed
 }
 pub(super) fn snapshot(elements: &mut HashMap<u32, Owned>, budget: Duration) -> Snapshot {
     let mut service = Service::new();
@@ -1003,6 +1209,31 @@ pub(super) fn latency(seconds: u64, fixture: Option<i32>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activation_recovery_is_bounded_and_respects_a_different_front_app() {
+        let now = Instant::now();
+        let mut activation = Activation::new(42, 7, 8, now);
+        assert!(activation.permits_front(7));
+        assert!(activation.permits_front(8));
+        assert!(activation.permits_front(std::process::id() as i32));
+        assert!(!activation.permits_front(9));
+        for _ in 0..3 {
+            assert!(activation.can_retry(now));
+            activation.retried(now);
+        }
+        assert!(!activation.can_retry(now));
+        assert!(!Activation::new(42, 7, 8, now).can_retry(now + Duration::from_secs(1)));
+        assert!(activation_retryable(ipc_budget::Status {
+            error: Some(-25204),
+            ..Default::default()
+        }));
+        for error in [-25202, -25205, -25211] {
+            assert!(!activation_retryable(ipc_budget::Status {
+                error: Some(error),
+                ..Default::default()
+            }));
+        }
+    }
     #[test]
     fn public_identity_rejects_ambiguous_windows() {
         let a = PublicWindow {

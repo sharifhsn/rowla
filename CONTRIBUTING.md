@@ -107,6 +107,7 @@ Run these commands in a local macOS desktop session. They create temporary test 
 
 For window-control or capture changes, also do checks of permission denial, window close, minimized windows, sleep, and display changes.
 Use `scripts/live-qa-fixture.py` for disposable fixture windows. Capture and Accessibility checks can need macOS permissions.
+Use the [first-click regression procedure](docs/QA_FIRST_CLICK.md) for late native replies, restore, and rapid target changes.
 Remove personal window titles and screenshots from bug reports.
 Finite memory profiles do not prove that all native paths are free of leaks.
 

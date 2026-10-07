@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="taskbar-interaction-qa-") as temporary:
     try:
         for line in sys.stdin:
             command = json.loads(line)
-            if command.get("op") not in {"open", "close", "minimize", "report", "quit"}:
+            if command.get("op") not in {"open", "close", "minimize", "hide", "delay", "report", "quit"}:
                 raise ValueError("Unknown fixture command")
             fixture.stdin.write(json.dumps(command) + "\n")
             fixture.stdin.flush()
