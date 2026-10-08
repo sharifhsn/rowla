@@ -54,6 +54,11 @@ Independent main windows retain separate tiles. Rowla groups a utility window on
 Native tabs use the application's Accessibility tab controls. This includes AppKit tab groups used by applications such as Ghostty.
 An inactive native tab exposes its name; its image becomes available after selection. Browser document tabs need application-specific support.
 
+Chrome window icons show a small profile photo at the top right. A profile-color ring and tooltip help identify the profile.
+The badge uses Chrome's local profile metadata and cached photo. A missing photo uses a colored initial.
+Disable **Preferences → Taskbar → Show Chrome profile badges** to remove these badges.
+The feature supports standard Chrome data folders and English accessibility titles. Unknown or ambiguous profiles receive no badge.
+
 Pinned icons appear only when the application has no discovered window. A minimized or hidden window still counts as a window.
 
 Cached thumbnails appear immediately. A first capture needs time. Rowla retains a last captured preview for a minimized window. A window that was already minimized before its first capture can have no thumbnail.

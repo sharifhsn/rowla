@@ -25,6 +25,7 @@ use std::{
 };
 mod active_feedback;
 mod brand;
+mod chrome_profiles;
 mod hover_close;
 mod preview_cache;
 mod preview_frame;
@@ -137,6 +138,7 @@ struct State {
     received_snapshot: bool,
     bars: Vec<Bar>,
     icons: HashMap<String, Retained<NSImage>>,
+    profile_badges: chrome_profiles::Service,
     order: Vec<u32>,
     activity: crate::window_order::Activity,
     sort_order_error: Option<String>,
@@ -319,6 +321,7 @@ struct ButtonIvars {
     reserved_width: Cell<f64>,
     related_ids: RefCell<Vec<u32>>,
     hovered: Cell<bool>,
+    profile_badge: RefCell<Option<Retained<NSImage>>>,
 }
 define_class!(
  #[unsafe(super=NSButton)] #[thread_kind=MainThreadOnly] #[ivars=ButtonIvars] #[name = "TaskbarRustActionButton"] struct ActionButton;
@@ -336,6 +339,7 @@ define_class!(
    if inset>0.0&&let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(0.0,0.0,(self.bounds().size.width-inset).max(0.0),self.bounds().size.height),self);}
    else{unsafe{let _:()=msg_send![super(self),drawRect:r];}}
    NSGraphicsContext::restoreGraphicsState_class();
+   chrome_profiles::draw(self);
    if self.ivars().badge.get(){NSColor::systemRedColor().set();let bounds=self.bounds();NSBezierPath::bezierPathWithOvalInRect(rect(bounds.size.width-self.ivars().reserved_width.get()-9.0,bounds.size.height-9.0,6.0,6.0)).fill();}
   }
   #[unsafe(method(pressed:))] fn pressed(&self,_sender:&AnyObject){if let Some(s)=self.ivars().state.upgrade(){dispatch(&s,self.ivars().action.clone());}}
@@ -383,7 +387,7 @@ impl ActionButton {
         s.borrow_mut().performance.buttons_created += 1;
         let m = MainThreadMarker::new().unwrap();
         let b: Retained<Self> = unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None),reserved_width:Cell::new(0.0),related_ids:RefCell::new(Vec::new()),hovered:Cell::new(false)})),initWithFrame:r]
+            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None),reserved_width:Cell::new(0.0),related_ids:RefCell::new(Vec::new()),hovered:Cell::new(false),profile_badge:RefCell::new(None)})),initWithFrame:r]
         };
         b.setTitle(&NSString::from_str(title));
         let accessible = if matches!(b.ivars().action, Action::Start(_)) {
@@ -843,6 +847,17 @@ fn tick_inner(state: &Shared) {
         while let Ok(snapshot) = s.rx.try_recv() {
             s.received_snapshot = true;
             permissions_changed |= apply_snapshot(&mut s, snapshot);
+        }
+        if s.gui_smoke.is_none() {
+            let enabled = s.config.chrome_profile_badges;
+            let State {
+                profile_badges,
+                snapshot,
+                ..
+            } = &mut *s;
+            if profile_badges.poll(&snapshot.windows, enabled) {
+                s.dirty = true;
+            }
         }
         if s.pending_focus
             .is_some_and(|pending| pending.expired(Instant::now()))
@@ -1373,15 +1388,6 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 &title,
                 rect(x, 0.0, tw, h),
             );
-            set_tooltip(
-                &b,
-                &[
-                    &w.app,
-                    " — ",
-                    &w.title,
-                    "\n⌘W while hovering closes this window",
-                ],
-            );
             b.set_window_focus(
                 focused_id == Some(w.id) || group.children.iter().any(|w| focused_id == Some(w.id)),
                 c.font_size,
@@ -1401,6 +1407,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 b.setImagePosition(position);
             }
             set_app_icon(state, &b, &w.bundle, &w.path);
+            chrome_profiles::apply(state, &b, w);
             let alpha = if w.minimized || w.hidden { 0.65 } else { 1.0 };
             if b.alphaValue() != alpha {
                 b.setAlphaValue(alpha);
@@ -2559,6 +2566,7 @@ fn bool_setting<'a>(c: &'a mut Config, k: &str) -> Option<&'a mut bool> {
         "middle_closes" => &mut c.middle_closes,
         "show_hidden" => &mut c.show_hidden,
         "show_badges" => &mut c.show_badges,
+        "chrome_profile_badges" => &mut c.chrome_profile_badges,
         "show_all_spaces" => &mut c.show_all_spaces,
         "show_tabs" => &mut c.show_tabs,
         "compact_related_windows" => &mut c.compact_related_windows,
@@ -2662,6 +2670,7 @@ fn persist_metrics(s: &State) {
     let (frames, sessions, live, running) = crate::capture::counts();
     let mut d = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"accessibility":s.snapshot.trusted,"screen_recording":s.snapshot.screen_allowed,"hover_close_enabled":s.hover_close.as_ref().is_some_and(hover_close::Service::enabled),"login_status":platform::login_status(),"windows":s.snapshot.windows.len(),"icons":s.icons.len(),"order_entries":s.order.len(),"displays":s.bars.len(),"installed_apps":s.apps.len(),"captures":s.captures,"capture_errors":s.capture_errors,"capture_pending":s.capture_busy,"scan_ms":s.snapshot.scan_ms,"capabilities":s.snapshot.capabilities,"discovery":s.snapshot.discovery,"cf_live":cf_live,"cf_peak":cf_peak,"stream_frames":frames,"stream_sessions":sessions,"stream_live":live,"stream_running":running,"capture_stop_errors":crate::capture::stop_errors(),"capture_native_state_uncertain":crate::capture::native_uncertain(),"performance":s.performance.json(),"preview_cache_entries":s.preview_cache.len(),"interaction_timer_active":s.interaction_timer.is_some(),"error":s.error});
     d["capture_features"] = crate::capture::diagnostics();
+    d["chrome_profiles"] = s.profile_badges.diagnostics();
     d["capture_mode"] = serde_json::to_value(s.config.capture_mode).unwrap();
     d["minimum_macos"] = "15.2".into();
     let _ = std::fs::write(
@@ -2768,6 +2777,7 @@ fn build_preferences(state: &Shared, page: usize) {
             ("middle_closes", "Middle-click closes window"),
             ("show_hidden", "Show hidden windows"),
             ("show_badges", "Show app notification badges"),
+            ("chrome_profile_badges", "Show Chrome profile badges"),
             ("show_all_spaces", "Indicate apps assigned to all Spaces"),
             (
                 "compact_related_windows",
@@ -3494,6 +3504,7 @@ fn run_mode(
         received_snapshot: false,
         bars: vec![],
         icons: HashMap::new(),
+        profile_badges: chrome_profiles::Service::default(),
         order: vec![],
         activity: crate::window_order::Activity::default(),
         sort_order_error: None,

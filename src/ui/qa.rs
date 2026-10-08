@@ -230,6 +230,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     eprintln!("Native UI check: system features");
     let system_features = check_system_features(state);
     let related_windows = check_related_windows(state);
+    let chrome_profiles = check_chrome_profiles(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -248,6 +249,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && snapshot_checks["passed"] == true
         && system_features["passed"] == true
         && related_windows["passed"] == true
+        && chrome_profiles["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -258,9 +260,162 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"chrome_profiles":chrome_profiles,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
+    use crate::chrome_profiles::{AVATAR_SIDE, Browser, Catalog, Profile};
+    let saved = {
+        let mut s = state.borrow_mut();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            std::mem::take(&mut s.profile_badges),
+        )
+    };
+    let profile = |folder: &str, name: &str, color: u32, picture: bool| Profile {
+        folder: folder.into(),
+        name: name.into(),
+        color,
+        picture_file: None,
+        pixels: picture.then(|| {
+            let mut bytes = vec![0u8; AVATAR_SIDE * AVATAR_SIDE * 4];
+            for (i, p) in bytes.chunks_exact_mut(4).enumerate() {
+                let x = (i % AVATAR_SIDE) as i32 - 16;
+                let y = (i / AVATAR_SIDE) as i32 - 16;
+                let head = x * x + (y - 5) * (y - 5) < 25;
+                let shoulders = x * x + (y + 12) * (y + 12) < 100;
+                let c = if head || shoulders { 0xfff2d3b1 } else { color };
+                p.copy_from_slice(&[c as u8, (c >> 8) as u8, (c >> 16) as u8, 255]);
+            }
+            bytes.into()
+        }),
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.chrome_profile_badges = true;
+        s.config.compact_related_windows = false;
+        s.config.show_titles = true;
+        s.config.scale = 100.0;
+        s.config.max_width = 235.0;
+        s.config.main_only = false;
+        s.config.blacklist.clear();
+        s.config.hidden_displays.clear();
+        s.hidden_now.clear();
+        s.config.show_tabs = true;
+        s.profile_badges.install(vec![Catalog {
+            browser: Browser::Stable,
+            profiles: vec![
+                profile("Default", "Alex", 0xffc44862, true),
+                profile("Profile 1", "Alex (Work)", 0xff3478bc, true),
+                profile("Profile 2", "School", 0xff56843d, false),
+            ],
+        }]);
+        s.snapshot.windows = (1..=6)
+            .map(|id| Window {
+                id,
+                pid: 1,
+                app: "Google Chrome".into(),
+                bundle: "com.google.Chrome".into(),
+                path: "/Applications/Google Chrome.app".into(),
+                title: match id {
+                    1 => "Home - Google Chrome - Alex",
+                    2 => "Work - Google Chrome - Alex (Work)",
+                    3 => "Minimized - Google Chrome - Alex",
+                    4 => "School - Google Chrome - School",
+                    5 => "Private - Google Chrome (Incognito)",
+                    _ => "Unknown - Google Chrome - Other",
+                }
+                .into(),
+                minimized: id == 3,
+                on_space: true,
+                width: 600.0,
+                height: 400.0,
+                ..Window::default()
+            })
+            .collect();
+        s.order = (1..=6).collect();
+    }
+    render(state);
+    let buttons = || {
+        let s = state.borrow();
+        (1..=6)
+            .map(|id| s.bars[0].buttons[&Action::Window(id)].clone())
+            .collect::<Vec<_>>()
+    };
+    let bs = buttons();
+    let image = |b: &ActionButton| {
+        b.ivars()
+            .profile_badge
+            .borrow()
+            .as_ref()
+            .map(|i| std::ptr::from_ref(&**i))
+    };
+    let mapped = bs[..4].iter().all(|b| image(b).is_some())
+        && bs[4..].iter().all(|b| image(b).is_none())
+        && image(&bs[0]) == image(&bs[2])
+        && image(&bs[0]) != image(&bs[1])
+        && bs[1]
+            .toolTip()
+            .unwrap()
+            .to_string()
+            .contains("Chrome profile: Alex (Work)");
+    let created = state.borrow().performance.buttons_created;
+    for _ in 0..100 {
+        render(state);
+    }
+    let reused = created == state.borrow().performance.buttons_created
+        && buttons()
+            .iter()
+            .zip(&bs)
+            .all(|(a, b)| std::ptr::eq(&**a, &**b) && image(a) == image(b));
+    let bounds_ok = |b: &ActionButton| {
+        chrome_profiles::frame(b).is_some_and(|f| {
+            f.origin.x >= 0.0
+                && f.origin.y >= 0.0
+                && f.origin.x + f.size.width <= b.bounds().size.width
+                && f.origin.y + f.size.height <= b.bounds().size.height
+                && f.size.width <= 12.0
+        })
+    };
+    let bounds = bs[..4].iter().all(|b| bounds_ok(b));
+    let root = state.borrow().bars[0].root.clone();
+    let panel = state.borrow().bars[0].panel.clone();
+    let f = chrome_profiles::frame(&bs[0]).unwrap();
+    let point = bs[0].convertPoint_toView(
+        NSPoint::new(
+            f.origin.x + f.size.width / 2.0,
+            f.origin.y + f.size.height / 2.0,
+        ),
+        None,
+    );
+    let hit = root
+        .hitTest(root.convertPoint_fromView(point, None))
+        .is_some_and(|v| std::ptr::eq(&*v, &*bs[0] as &NSView));
+    let close_target =
+        hover_close::tile_at(&state.borrow().bars[0], panel.convertPointToScreen(point)) == Some(1);
+    let screenshot = render_fixture_view(&root, "chrome-profile-badges.png");
+    state.borrow_mut().config.show_titles = false;
+    state.borrow_mut().config.scale = 60.0;
+    render(state);
+    let scaled_height = state.borrow().bars[0].panel.frame().size.height;
+    // AppKit rounds window frames to display pixels at fractional scales.
+    let narrow = buttons()[..4].iter().all(|b| bounds_ok(b)) && (scaled_height - 19.2).abs() < 1.0;
+    state.borrow_mut().config.chrome_profile_badges = false;
+    render(state);
+    let disabled = buttons().iter().all(|b| image(b).is_none());
+    {
+        let mut s = state.borrow_mut();
+        (s.config, s.snapshot, s.order, s.profile_badges) = saved;
+    }
+    render(state);
+    serde_json::json!({"passed":mapped&&reused&&bounds&&hit&&close_target&&screenshot&&narrow&&disabled,
+        "profile_mapping":mapped,"shared_images_and_controls":reused,"badge_bounds":bounds,
+        "badge_hit_target":hit,"hover_close_target":close_target,"synthetic_screenshot":screenshot,
+        "icon_only_scaled_bounds":narrow,"scaled_panel_height":scaled_height,"disabled_clears_images":disabled})
 }
 
 fn check_related_windows(state: &Shared) -> serde_json::Value {

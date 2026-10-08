@@ -1,5 +1,7 @@
 //! Rowla's owned data model and macOS integration boundary.
 //! Native capture and UI internals are deliberately not exposed as raw pointers.
+#[cfg(any(target_os = "macos", test))]
+mod chrome_profiles;
 pub mod config;
 pub mod models;
 #[cfg(any(target_os = "macos", test))]

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bound the native fixture check and retain a stack sample if its child stalls."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 
@@ -32,8 +33,14 @@ def main():
                     process.kill()
                     process.wait()
             result = 1
-    print(log.read_text(), end="")
-    return 1 if result else 0
+    contents = log.read_text()
+    print(contents, end="")
+    try:
+        report = json.loads(contents.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        print("Native UI check has no complete JSON report.", file=sys.stderr)
+        return 1
+    return 0 if result == 0 and report.get("completed") is True and report.get("passed") is True else 1
 
 
 if __name__ == "__main__":

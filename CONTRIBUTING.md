@@ -76,6 +76,7 @@ CI does not grant Accessibility or Screen Recording access. It does not prove co
 | `src/platform.rs`, `src/platform/` | Accessibility discovery, observers, and window controls |
 | `src/capture.rs` | Serial ScreenCaptureKit stream and snapshot capture |
 | `src/native_features.rs` | Runtime checks for newer optional APIs and compatibility probe |
+| `src/chrome_profiles.rs`, `src/chrome_profiles/`, `src/ui/chrome_profiles.rs` | Bounded local Chrome metadata, background photo decode, and shared profile badges |
 | `src/system_actions.rs`, `shortcuts/` | Exact local action URLs and signed shortcut import files |
 | `src/config.rs`, `src/window_order.rs` | Preferences and Sort order |
 | `src/runtime.rs`, `src/scheduler.rs`, `src/ipc_budget.rs` | Work queues, deadlines, and request limits |
