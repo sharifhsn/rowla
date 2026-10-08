@@ -1058,16 +1058,14 @@ fn worker_core(
                     deferred_closes.retain(|target, _| matches!(target, DeferredClose::Window(_)));
                 }
                 let requested = match command {
-                    Command::Activate(id, false) => service
-                        .apps
-                        .iter()
-                        .find(|(_, app)| app.windows.contains_key(&id))
-                        .map(|(pid, app)| {
+                    Command::Activate(id, false) => service.apps.iter().find_map(|(pid, app)| {
+                        app.windows.get(&id).map(|window| {
                             let mut request =
                                 Activation::new(id, *pid, front_pid(), Instant::now());
-                            request.auxiliary = app.windows[&id].subordinate;
+                            request.auxiliary = window.subordinate;
                             request
-                        }),
+                        })
+                    }),
                     Command::SelectTab(tab) | Command::CloseTab(tab) => {
                         service.tab_elements.get(&tab).and_then(tab_pid).map(|pid| {
                             let mut request = Activation::new(0, pid, front_pid(), Instant::now());
@@ -1371,25 +1369,18 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
     let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || worker_core(rx, snap_tx, Some(pid)));
     let mut snapshot = Snapshot::default();
-    let order_probe = std::cell::RefCell::new(TabOrderProbe::default());
-    let pump = |snapshot: &mut Snapshot| {
+    let mut order_probe = TabOrderProbe::default();
+    let mut pump = |snapshot: &mut Snapshot| {
         objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
             &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
         );
         while let Ok(value) = snap_rx.try_recv() {
-            order_probe.borrow_mut().record(&value, pid);
+            order_probe.record(&value, pid);
             *snapshot = value;
         }
     };
     let fixture =
         |w: &&Window| w.pid == pid && w.bundle == "io.sharif.taskbarrust.interactionfixture";
-    let tab_metadata =
-        |snapshot: &Snapshot| {
-            snapshot.windows.iter().filter(fixture).map(|w| serde_json::json!({
-            "id": w.id, "on_space": w.on_space, "tabbed_hidden": w.tabbed_hidden,
-            "focused": w.focused, "tab_ids": w.tabs.iter().map(|t| t.id).collect::<Vec<_>>()
-        })).collect::<Vec<_>>()
-        };
     let discovery = Instant::now();
     while discovery.elapsed() < Duration::from_secs(3) {
         pump(&mut snapshot);
@@ -1415,7 +1406,6 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
     let mut selected = 0;
     let mut errors = Vec::new();
     let mut stale_rejected = false;
-    let mut transitions = Vec::new();
     for index in [1usize, 0, 1, 0] {
         let Some(w) = snapshot
             .windows
@@ -1427,7 +1417,6 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
         };
         let token = w.tabs[index].id;
         let title = w.tabs[index].title.clone();
-        let before = tab_metadata(&snapshot);
         if !stale_rejected {
             let queued = tx.try_send(Command::SelectTab(u64::MAX)).is_ok();
             let wait = Instant::now();
@@ -1460,14 +1449,11 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
                 })
             {
                 selected += 1;
-                transitions
-                    .push(serde_json::json!({"before": before, "after": tab_metadata(&snapshot)}));
                 break;
             }
         }
     }
     let mut auxiliary = false;
-    let mut auxiliary_metadata = serde_json::Value::Null;
     if let Some(id) = snapshot
         .windows
         .iter()
@@ -1482,7 +1468,6 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
             pump(&mut snapshot);
             failed |= snapshot.control_error.is_some();
         }
-        auxiliary_metadata = serde_json::json!({"queued":queued,"failed":failed,"front_is_fixture":front_pid()==pid,"window":snapshot.windows.iter().find(|w|w.id==id).map(|w|serde_json::json!({"hidden":w.hidden,"tabbed_hidden":w.tabbed_hidden,"on_space":w.on_space,"focused":w.focused})),"control_error":snapshot.control_error});
         auxiliary = queued
             && !failed
             && front_pid() == pid
@@ -1523,11 +1508,9 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
                 .filter(fixture)
                 .all(|w| w.tab_count < 2);
     }
-    let final_metadata:Vec<_>=snapshot.windows.iter().filter(fixture).map(|w|serde_json::json!({"id":w.id,"auxiliary":w.subordinate,"tab_count":w.tab_count,"tabs":w.tabs,"tabbed_hidden":w.tabbed_hidden,"focused":w.focused})).collect();
     let _ = tx.send(Command::Stop);
     drop(tx);
     let _ = worker.join();
-    let order_probe = order_probe.into_inner();
     let tab_order_stable = order_probe.stable && order_probe.switches >= 4;
     let passed = grouped
         && selected == 4
@@ -1538,7 +1521,7 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
         && cf_counts().0 == 0;
     println!(
         "{}",
-        serde_json::json!({"passed":passed,"grouped":grouped,"tabs_selected":selected,"tab_transitions":transitions,"tab_order_stable":tab_order_stable,"physical_window_switches":order_probe.switches,"stale_target_rejected":stale_rejected,"auxiliary_shown":auxiliary,"auxiliary_metadata":auxiliary_metadata,"closed_only_tab":closed_only_tab,"final_fixture_metadata":final_metadata,"cf_live":cf_counts().0,"control_errors":errors})
+        serde_json::json!({"passed":passed,"grouped":grouped,"tabs_selected":selected,"tab_order_stable":tab_order_stable,"physical_window_switches":order_probe.switches,"stale_target_rejected":stale_rejected,"auxiliary_shown":auxiliary,"closed_only_tab":closed_only_tab,"cf_live":cf_counts().0,"control_errors":errors})
     );
     passed
 }

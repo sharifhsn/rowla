@@ -105,20 +105,12 @@ impl Service {
             .find(|c| c.browser == browser)?
             .profile_for_title(title)?;
         let key = (browser, profile.folder.clone());
-        if self
-            .images
-            .get(&key)
-            .is_none_or(|cached| cached.source != *profile)
-        {
-            self.images.insert(
-                key.clone(),
-                Cached {
-                    source: profile.clone(),
-                    image: make_badge(profile),
-                },
-            );
-        }
-        Some((self.images[&key].image.clone(), profile.name.clone()))
+        // install removes badges whose source profile changed.
+        let cached = self.images.entry(key).or_insert_with(|| Cached {
+            source: profile.clone(),
+            image: make_badge(profile),
+        });
+        Some((cached.image.clone(), profile.name.clone()))
     }
 }
 fn photo(profile: &Profile) -> Option<Retained<NSImage>> {
@@ -265,27 +257,17 @@ pub(super) fn apply(state: &Shared, button: &ActionButton, window: &Window) {
         *current = image.cloned();
         NSView::setNeedsDisplay(button, true);
     }
-    if let Some((_, name)) = badge {
-        set_tooltip(
-            button,
-            &[
-                &window.app,
-                " — ",
-                &window.title,
-                "\nChrome profile: ",
-                &name,
-                "\n⌘W while hovering closes this window",
-            ],
-        );
-    } else {
-        set_tooltip(
-            button,
-            &[
-                &window.app,
-                " — ",
-                &window.title,
-                "\n⌘W while hovering closes this window",
-            ],
-        );
-    }
+    let profile = badge.map_or(String::new(), |(_, name)| {
+        format!("\nChrome profile: {name}")
+    });
+    set_tooltip(
+        button,
+        &[
+            &window.app,
+            " — ",
+            &window.title,
+            &profile,
+            "\n⌘W while hovering closes this window",
+        ],
+    );
 }

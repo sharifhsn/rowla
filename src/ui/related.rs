@@ -145,31 +145,27 @@ pub(super) fn render_bubbles(
     reserved
 }
 
-pub(super) fn select_tab(state: &Shared, id: u32, index: u64) {
+pub(super) fn select_tab(state: &Shared, id: u32, tab_id: u64) {
     let started = Instant::now();
     let buttons = {
         let mut s = state.borrow_mut();
-        let Some(token) = s
+        if !s
             .snapshot
             .windows
             .iter()
-            .find(|w| w.id == id)
-            .and_then(|w| w.tabs.iter().find(|t| t.id == index))
-            .map(|t| t.id)
-        else {
-            return;
-        };
-        if !s.command(Command::SelectTab(token)) {
+            .any(|w| w.id == id && w.tabs.iter().any(|t| t.id == tab_id))
+            || !s.command(Command::SelectTab(tab_id))
+        {
             return;
         }
-        s.pending_tab = Some((id, index, started));
+        s.pending_tab = Some((id, tab_id, started));
         s.pending_focus = Some(active_feedback::PendingFocus::new(id, started));
         s.bars
             .iter()
             .flat_map(|b| b.buttons.values())
             .filter_map(|b| match b.ivars().action {
                 Action::Tab(owner, i) if owner == id => {
-                    Some((b.clone(), i == index, 9.0 * s.config.scale / 100.0))
+                    Some((b.clone(), i == tab_id, 9.0 * s.config.scale / 100.0))
                 }
                 Action::Window(owner) if owner == id => Some((b.clone(), true, s.config.font_size)),
                 _ => None,
