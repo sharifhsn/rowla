@@ -104,21 +104,14 @@ impl Service {
             .iter()
             .find(|c| c.browser == browser)?
             .profile_for_title(title)?;
-        let key = (browser, profile.folder.clone());
-        if self
+        let cached = self
             .images
-            .get(&key)
-            .is_none_or(|cached| cached.source != *profile)
-        {
-            self.images.insert(
-                key.clone(),
-                Cached {
-                    source: profile.clone(),
-                    image: make_badge(profile),
-                },
-            );
-        }
-        Some((self.images[&key].image.clone(), profile.name.clone()))
+            .entry((browser, profile.folder.clone()))
+            .or_insert_with(|| Cached {
+                source: profile.clone(),
+                image: make_badge(profile),
+            });
+        Some((cached.image.clone(), profile.name.clone()))
     }
 }
 fn photo(profile: &Profile) -> Option<Retained<NSImage>> {

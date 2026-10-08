@@ -149,17 +149,16 @@ pub(super) fn select_tab(state: &Shared, id: u32, index: u64) {
     let started = Instant::now();
     let buttons = {
         let mut s = state.borrow_mut();
-        let Some(token) = s
+        if !s
             .snapshot
             .windows
             .iter()
             .find(|w| w.id == id)
-            .and_then(|w| w.tabs.iter().find(|t| t.id == index))
-            .map(|t| t.id)
-        else {
+            .is_some_and(|w| w.tabs.iter().any(|t| t.id == index))
+        {
             return;
-        };
-        if !s.command(Command::SelectTab(token)) {
+        }
+        if !s.command(Command::SelectTab(index)) {
             return;
         }
         s.pending_tab = Some((id, index, started));

@@ -1638,14 +1638,13 @@ fn dispatch(state: &Shared, a: Action) {
         Action::Tab(id, index) => related::select_tab(state, id, index),
         Action::CloseTab(id, index) => {
             let s = state.borrow();
-            if let Some(tab) = s
-                .snapshot
+            if s.snapshot
                 .windows
                 .iter()
                 .find(|w| w.id == id)
-                .and_then(|w| w.tabs.iter().find(|t| t.id == index))
+                .is_some_and(|w| w.tabs.iter().any(|t| t.id == index))
             {
-                s.command(Command::CloseTab(tab.id));
+                s.command(Command::CloseTab(index));
             }
         }
         Action::Raise(id) | Action::Bubble(id) => {
