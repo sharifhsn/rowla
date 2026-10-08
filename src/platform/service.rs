@@ -737,6 +737,7 @@ impl Service {
                             all_spaces: ws.len() > 1,
                             on_space,
                             tabbed_hidden: role == "AXStandardWindow"
+                                && !focused
                                 && !minimized
                                 && !app.meta.hidden
                                 && on_space
@@ -1298,21 +1299,97 @@ pub(super) fn check_fixture_activation(pid: i32) -> bool {
     );
     passed
 }
+#[derive(Default)]
+struct TabOrderProbe {
+    previous: Vec<Window>,
+    order: Vec<u32>,
+    spaces: HashMap<u32, bool>,
+    owner: Option<u32>,
+    switches: usize,
+    stable: bool,
+}
+impl TabOrderProbe {
+    fn record(&mut self, snapshot: &Snapshot, pid: i32) {
+        let mut current: Vec<_> = snapshot
+            .windows
+            .iter()
+            .filter(|w| {
+                w.pid == pid
+                    && w.bundle == "io.sharif.taskbarrust.interactionfixture"
+                    && !w.subordinate
+            })
+            .cloned()
+            .collect();
+        let owner = current
+            .iter()
+            .find(|w| w.native_tabs && w.on_space && (w.focused || !w.tabbed_hidden))
+            .map(|w| w.id);
+        // Synthetic neighbors verify the slot without controlling real windows.
+        for id in [u32::MAX - 1, u32::MAX] {
+            current.push(Window {
+                id,
+                pid: -1,
+                on_space: true,
+                ..Window::default()
+            });
+        }
+        if self.order.is_empty() {
+            let Some(id) = owner else {
+                return;
+            };
+            self.order = vec![u32::MAX - 1, id, u32::MAX];
+            self.order.extend(
+                current
+                    .iter()
+                    .filter(|w| !self.order.contains(&w.id))
+                    .map(|w| w.id)
+                    .collect::<Vec<_>>(),
+            );
+            self.stable = true;
+        }
+        let alive = current.iter().map(|w| w.id).collect();
+        crate::window_order::reconcile(
+            &mut self.order,
+            &mut self.spaces,
+            &self.previous,
+            &current,
+            false,
+            &alive,
+        );
+        if let Some(id) = owner {
+            if self.owner.is_some_and(|old| old != id) {
+                self.switches += 1;
+            }
+            self.stable &= self.order.iter().position(|window| *window == id) == Some(1);
+        }
+        self.owner = owner;
+        self.previous = current;
+    }
+}
 pub(super) fn check_fixture_related(pid: i32) -> bool {
     let (tx, rx) = std::sync::mpsc::sync_channel(8);
     let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || worker_core(rx, snap_tx, Some(pid)));
     let mut snapshot = Snapshot::default();
+    let order_probe = std::cell::RefCell::new(TabOrderProbe::default());
     let pump = |snapshot: &mut Snapshot| {
         objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
             &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
         );
         while let Ok(value) = snap_rx.try_recv() {
+            order_probe.borrow_mut().record(&value, pid);
             *snapshot = value;
         }
     };
     let fixture =
         |w: &&Window| w.pid == pid && w.bundle == "io.sharif.taskbarrust.interactionfixture";
+    let tab_metadata =
+        |snapshot: &Snapshot| {
+            snapshot.windows.iter().filter(fixture).map(|w| serde_json::json!({
+            "id": w.id, "on_space": w.on_space, "tabbed_hidden": w.tabbed_hidden,
+            "focused": w.focused, "tab_ids": w.tabs.iter().map(|t| t.id).collect::<Vec<_>>()
+        })).collect::<Vec<_>>()
+        };
     let discovery = Instant::now();
     while discovery.elapsed() < Duration::from_secs(3) {
         pump(&mut snapshot);
@@ -1338,6 +1415,7 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
     let mut selected = 0;
     let mut errors = Vec::new();
     let mut stale_rejected = false;
+    let mut transitions = Vec::new();
     for index in [1usize, 0, 1, 0] {
         let Some(w) = snapshot
             .windows
@@ -1349,6 +1427,7 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
         };
         let token = w.tabs[index].id;
         let title = w.tabs[index].title.clone();
+        let before = tab_metadata(&snapshot);
         if !stale_rejected {
             let queued = tx.try_send(Command::SelectTab(u64::MAX)).is_ok();
             let wait = Instant::now();
@@ -1381,6 +1460,8 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
                 })
             {
                 selected += 1;
+                transitions
+                    .push(serde_json::json!({"before": before, "after": tab_metadata(&snapshot)}));
                 break;
             }
         }
@@ -1446,15 +1527,18 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
     let _ = tx.send(Command::Stop);
     drop(tx);
     let _ = worker.join();
+    let order_probe = order_probe.into_inner();
+    let tab_order_stable = order_probe.stable && order_probe.switches >= 4;
     let passed = grouped
         && selected == 4
         && stale_rejected
+        && tab_order_stable
         && auxiliary
         && closed_only_tab
         && cf_counts().0 == 0;
     println!(
         "{}",
-        serde_json::json!({"passed":passed,"grouped":grouped,"tabs_selected":selected,"stale_target_rejected":stale_rejected,"auxiliary_shown":auxiliary,"auxiliary_metadata":auxiliary_metadata,"closed_only_tab":closed_only_tab,"final_fixture_metadata":final_metadata,"cf_live":cf_counts().0,"control_errors":errors})
+        serde_json::json!({"passed":passed,"grouped":grouped,"tabs_selected":selected,"tab_transitions":transitions,"tab_order_stable":tab_order_stable,"physical_window_switches":order_probe.switches,"stale_target_rejected":stale_rejected,"auxiliary_shown":auxiliary,"auxiliary_metadata":auxiliary_metadata,"closed_only_tab":closed_only_tab,"final_fixture_metadata":final_metadata,"cf_live":cf_counts().0,"control_errors":errors})
     );
     passed
 }

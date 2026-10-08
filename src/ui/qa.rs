@@ -231,6 +231,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let system_features = check_system_features(state);
     let related_windows = check_related_windows(state);
     let chrome_profiles = check_chrome_profiles(state);
+    let native_tab_order = check_native_tab_order(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -250,6 +251,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && system_features["passed"] == true
         && related_windows["passed"] == true
         && chrome_profiles["passed"] == true
+        && native_tab_order["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -260,9 +262,118 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"chrome_profiles":chrome_profiles,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"chrome_profiles":chrome_profiles,"native_tab_order":native_tab_order,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_native_tab_order(state: &Shared) -> serde_json::Value {
+    let saved = {
+        let s = state.borrow();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            s.known_spaces.clone(),
+        )
+    };
+    let owner = |id| Window {
+        id,
+        pid: 42,
+        app: "Native Tab QA".into(),
+        bundle: "qa.native-tabs".into(),
+        on_space: true,
+        focused: true,
+        native_tabs: true,
+        tab_count: 2,
+        width: 600.0,
+        height: 400.0,
+        title: format!("Terminal {id}"),
+        tabs: [101, 102]
+            .into_iter()
+            .map(|token| crate::models::WindowTab {
+                id: token,
+                title: format!("Tab {token}"),
+                selected: token == if id == 10 { 101 } else { 102 },
+                resolved: true,
+            })
+            .collect(),
+        ..Window::default()
+    };
+    let neighbor = |id| Window {
+        id,
+        pid: id as i32,
+        on_space: true,
+        app: "Neighbor QA".into(),
+        bundle: format!("qa.neighbor.{id}"),
+        width: 600.0,
+        height: 400.0,
+        ..Window::default()
+    };
+    let snapshot = |id| Snapshot {
+        trusted: true,
+        screen_allowed: true,
+        windows: vec![neighbor(1), owner(id), neighbor(3)],
+        ..Snapshot::default()
+    };
+    let mut stable = true;
+    let mut feedback = true;
+    for reset in [false, true] {
+        {
+            let mut s = state.borrow_mut();
+            s.config.compact_related_windows = true;
+            s.config.show_tabs = true;
+            s.config.main_only = false;
+            s.config.all_displays = true;
+            s.config.blacklist.clear();
+            s.config.hidden_displays.clear();
+            s.hidden_now.clear();
+            s.config.reset_space_order = reset;
+            s.snapshot = snapshot(10);
+            s.order = vec![3, 10, 1];
+            s.known_spaces = HashMap::from([(3, true), (10, true), (1, true)]);
+            s.pending_focus = None;
+            s.pending_tab = None;
+        }
+        render(state);
+        let frames: Vec<_> = [3, 10, 1]
+            .iter()
+            .map(|id| state.borrow().bars[0].buttons[&Action::Window(*id)].frame())
+            .collect();
+        for cycle in 0..12 {
+            let old = if cycle % 2 == 0 { 10 } else { 11 };
+            let next = if old == 10 { 11 } else { 10 };
+            let token = if next == 10 { 101 } else { 102 };
+            related::select_tab(state, old, token);
+            feedback &= state.borrow().bars[0].buttons[&Action::Tab(old, token)]
+                .ivars()
+                .window_style
+                .get()
+                .is_some_and(|s| s.focused);
+            apply_snapshot(&mut state.borrow_mut(), snapshot(next));
+            render(state);
+            let s = state.borrow();
+            stable &= s.order == [3, next, 1]
+                && s.known_spaces.len() == 3
+                && [3, next, 1]
+                    .iter()
+                    .zip(&frames)
+                    .all(|(id, frame)| s.bars[0].buttons[&Action::Window(*id)].frame() == *frame)
+                && s.bars[0].buttons[&Action::Tab(next, token)]
+                    .ivars()
+                    .window_style
+                    .get()
+                    .is_some_and(|s| s.focused);
+        }
+    }
+    {
+        let mut s = state.borrow_mut();
+        (s.config, s.snapshot, s.order, s.known_spaces) = saved;
+        s.pending_focus = None;
+        s.pending_tab = None;
+    }
+    render(state);
+    serde_json::json!({"passed":stable&&feedback,"transitions":24,"manual_slot_and_neighbor_frames":stable,"instant_tab_feedback":feedback})
 }
 
 fn check_chrome_profiles(state: &Shared) -> serde_json::Value {

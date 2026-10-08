@@ -805,27 +805,14 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
             p.image.setImage(None);
         }
     }
-    s.order.retain(|id| alive.contains(id));
-    s.known_spaces.retain(|id, _| alive.contains(id));
-    let mut ordered: HashSet<_> = s.order.iter().copied().collect();
-    for w in &snapshot.windows {
-        if s.config.reset_space_order
-            && s.known_spaces
-                .get(&w.id)
-                .is_some_and(|old| *old != w.on_space)
-        {
-            ordered.remove(&w.id);
-        }
-        s.known_spaces.insert(w.id, w.on_space);
-    }
-    // Remove all moved sources once, then append them in discovery order.
-    // Membership checks do not rescan the strip for each source window.
-    s.order.retain(|id| ordered.contains(id));
-    for w in &snapshot.windows {
-        if ordered.insert(w.id) {
-            s.order.push(w.id);
-        }
-    }
+    crate::window_order::reconcile(
+        &mut s.order,
+        &mut s.known_spaces,
+        &s.snapshot.windows,
+        &snapshot.windows,
+        s.config.reset_space_order,
+        &alive,
+    );
     s.snapshot = snapshot;
     prune_preview_sources(s, &alive);
     permissions_changed
