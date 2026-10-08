@@ -63,6 +63,14 @@ pub(crate) fn record(error: i32, optional_attribute: bool) {
 pub(crate) fn expired() -> bool {
     CONTEXT.get().deadline.is_some_and(|d| Instant::now() >= d) || crate::runtime::stopping()
 }
+pub(crate) fn remaining() -> Duration {
+    CONTEXT
+        .get()
+        .deadline
+        .map_or(Duration::from_millis(20), |d| {
+            d.saturating_duration_since(Instant::now())
+        })
+}
 pub(crate) fn healthy() -> bool {
     let c = CONTEXT.get();
     !c.status.exhausted && c.status.error.is_none() && !expired()

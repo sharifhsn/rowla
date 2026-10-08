@@ -15,6 +15,16 @@ pub struct Window {
     /// Dialogs and utility windows follow the application's main windows.
     #[serde(default)]
     pub subordinate: bool,
+    /// Native owner, when the provider exposes a window parent.
+    #[serde(default)]
+    pub parent_id: Option<u32>,
+    /// A native window tab bar with more than one tab.
+    #[serde(default)]
+    pub native_tabs: bool,
+    #[serde(default)]
+    pub tabs: Vec<WindowTab>,
+    #[serde(default)]
+    pub tab_count: usize,
     pub fullscreen: bool,
     pub all_spaces: bool,
     pub on_space: bool,
@@ -25,6 +35,17 @@ pub struct Window {
     pub height: f64,
     #[serde(default)]
     pub stale: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WindowTab {
+    /// Opaque control identity for this worker session.
+    #[serde(default)]
+    pub id: u64,
+    pub title: String,
+    pub selected: bool,
+    #[serde(default)]
+    pub resolved: bool,
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Application {

@@ -30,12 +30,17 @@ mod preview_cache;
 mod preview_frame;
 mod preview_lifecycle;
 mod qa;
+mod related;
 mod sort_order;
 type Shared = Rc<RefCell<State>>;
 type WeakState = Weak<RefCell<State>>;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Action {
     Window(u32),
+    Bubble(u32),
+    Tab(u32, u64),
+    CloseTab(u32, u64),
+    RelatedMore(u32),
     Raise(u32),
     Preview(u32),
     ScrollTasks(u32, bool),
@@ -127,6 +132,7 @@ struct State {
     config: Config,
     snapshot: Snapshot,
     pending_focus: Option<active_feedback::PendingFocus>,
+    pending_tab: Option<(u32, u64, Instant)>,
     pending_system_sort: bool,
     received_snapshot: bool,
     bars: Vec<Bar>,
@@ -194,6 +200,20 @@ impl State {
             match &command {
                 Command::Activate(id, false) => {
                     if let Some(window) = self.snapshot.windows.iter().find(|w| w.id == *id)
+                        && let Some(target) =
+                            NSRunningApplication::runningApplicationWithProcessIdentifier(
+                                window.pid,
+                            )
+                    {
+                        app.yieldActivationToApplication(&target);
+                    }
+                }
+                Command::SelectTab(token) => {
+                    if let Some(window) = self
+                        .snapshot
+                        .windows
+                        .iter()
+                        .find(|w| w.tabs.iter().any(|t| t.id == *token))
                         && let Some(target) =
                             NSRunningApplication::runningApplicationWithProcessIdentifier(
                                 window.pid,
@@ -296,17 +316,27 @@ struct ButtonIvars {
     start_index: Cell<Option<usize>>,
     badge: Cell<bool>,
     window_style: Cell<Option<WindowButtonStyle>>,
+    reserved_width: Cell<f64>,
+    related_ids: RefCell<Vec<u32>>,
+    hovered: Cell<bool>,
 }
 define_class!(
  #[unsafe(super=NSButton)] #[thread_kind=MainThreadOnly] #[ivars=ButtonIvars] #[name = "TaskbarRustActionButton"] struct ActionButton;
  unsafe impl NSObjectProtocol for ActionButton {}
  impl ActionButton {
   #[unsafe(method(drawRect:))] fn draw(&self,r:NSRect){
-   let focused=self.ivars().state.upgrade().and_then(|s|s.try_borrow().ok().map(|s|matches!(self.ivars().action,Action::Window(id) if s.focused_id()==Some(id)))).unwrap_or(false);
+   let focused=self.ivars().window_style.get().is_some_and(|style|style.focused);
    let selected=self.ivars().start_index.get().is_some_and(|index|self.ivars().state.upgrade().is_some_and(|s|s.try_borrow().ok().is_some_and(|s|s.start.as_ref().is_some_and(|m|m.selected==index))));
-   if focused||selected{NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),4.0,4.0).fill();}
-   unsafe{let _:()=msg_send![super(self),drawRect:r];}
-   if self.ivars().badge.get(){NSColor::systemRedColor().set();let bounds=self.bounds();NSBezierPath::bezierPathWithOvalInRect(rect(bounds.size.width-9.0,bounds.size.height-9.0,6.0,6.0)).fill();}
+   let bubble=matches!(self.ivars().action,Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_));
+   if bubble{let color=if focused{NSColor::controlAccentColor()}else{NSColor::secondaryLabelColor()};color.colorWithAlphaComponent(if self.ivars().hovered.get(){0.28}else{0.15}).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),self.bounds().size.height/2.0,self.bounds().size.height/2.0).fill();}
+   else if focused||selected{NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),4.0,4.0).fill();}
+   NSGraphicsContext::saveGraphicsState_class();
+   let inset=self.ivars().reserved_width.get();
+   if inset>0.0{NSBezierPath::bezierPathWithRect(rect(0.0,0.0,(self.bounds().size.width-inset).max(0.0),self.bounds().size.height)).addClip();}
+   if inset>0.0&&let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(0.0,0.0,(self.bounds().size.width-inset).max(0.0),self.bounds().size.height),self);}
+   else{unsafe{let _:()=msg_send![super(self),drawRect:r];}}
+   NSGraphicsContext::restoreGraphicsState_class();
+   if self.ivars().badge.get(){NSColor::systemRedColor().set();let bounds=self.bounds();NSBezierPath::bezierPathWithOvalInRect(rect(bounds.size.width-self.ivars().reserved_width.get()-9.0,bounds.size.height-9.0,6.0,6.0)).fill();}
   }
   #[unsafe(method(pressed:))] fn pressed(&self,_sender:&AnyObject){if let Some(s)=self.ivars().state.upgrade(){dispatch(&s,self.ivars().action.clone());}}
   #[unsafe(method(acceptsFirstMouse:))] fn accepts_first_mouse(&self,_e:Option<&NSEvent>)->bool{true}
@@ -314,10 +344,10 @@ define_class!(
   #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
   #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
   #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();if let (Some(s),Action::Window(id))=(self.ivars().state.upgrade(),&self.ivars().action)&& let Some(win)=self.window(){let r=win.convertRectToScreen(self.convertRect_toView(self.bounds(),None));begin_hover(&s,*id,win.windowNumber(),r);}}
-  #[unsafe(method(mouseExited:))] fn exited(&self,_e:&NSEvent){if let Some(s)=self.ivars().state.upgrade()&& let Ok(mut s)=s.try_borrow_mut()&& matches!(self.ivars().action,Action::Window(id) if s.hover.is_some_and(|h|h.0==id)){s.hover=None;}}
+  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();self.ivars().hovered.set(true);NSView::setNeedsDisplay(self,true);if let Some(s)=self.ivars().state.upgrade(){match self.ivars().action {Action::Window(id)|Action::Bubble(id)=>if let Some(win)=self.window(){let r=win.convertRectToScreen(self.convertRect_toView(self.bounds(),None));begin_hover(&s,id,win.windowNumber(),r);},Action::Tab(..)=>{hide_preview(&s);s.borrow_mut().hover=None;},_=>{}}}}
+  #[unsafe(method(mouseExited:))] fn exited(&self,_e:&NSEvent){self.ivars().hovered.set(false);NSView::setNeedsDisplay(self,true);if let Some(s)=self.ivars().state.upgrade()&& let Ok(mut s)=s.try_borrow_mut()&& matches!(self.ivars().action,Action::Window(id)|Action::Bubble(id) if s.hover.is_some_and(|h|h.0==id)){s.hover=None;}}
   #[unsafe(method(rightMouseDown:))] fn right_down(&self,e:&NSEvent){if let Some(s)=self.ivars().state.upgrade(){let m=context_menu(&s,Some(&self.ivars().action));{NSMenu::popUpContextMenu_withEvent_forView(&m,e,self);}}}
-  #[unsafe(method(otherMouseDown:))] fn other_down(&self,e:&NSEvent){if e.buttonNumber()==2&& let (Some(s),Action::Window(id))=(self.ivars().state.upgrade(),&self.ivars().action)&& s.borrow().config.middle_closes{dispatch(&s,Action::Close(*id));}}
+  #[unsafe(method(otherMouseDown:))] fn other_down(&self,e:&NSEvent){if e.buttonNumber()==2&& let Some(s)=self.ivars().state.upgrade()&& s.borrow().config.middle_closes{match self.ivars().action {Action::Window(id)|Action::Bubble(id)=>dispatch(&s,Action::Close(id)),Action::Tab(id,index)=>dispatch(&s,Action::CloseTab(id,index)),_=>{}}}}
   #[unsafe(method(mouseDown:))] fn down(&self,e:&NSEvent){NSCursor::arrowCursor().set();if !self.isEnabled(){return;}self.ivars().drag.set(Some(e.locationInWindow()));self.ivars().dragged.set(false);self.highlight(true);}
   #[unsafe(method(mouseDragged:))] fn dragged(&self,e:&NSEvent){NSCursor::arrowCursor().set();if self.can_drag()&& let Some(start)=self.ivars().drag.get(){let p=e.locationInWindow();if (p.x-start.x).abs()>5.0||(p.y-start.y).abs()>5.0{self.ivars().dragged.set(true);}}}
   #[unsafe(method(mouseUp:))] fn up(&self,e:&NSEvent){NSCursor::arrowCursor().set();self.highlight(false);if self.ivars().drag.take().is_none()||!self.isEnabled(){return;}
@@ -353,7 +383,7 @@ impl ActionButton {
         s.borrow_mut().performance.buttons_created += 1;
         let m = MainThreadMarker::new().unwrap();
         let b: Retained<Self> = unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None)})),initWithFrame:r]
+            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None),reserved_width:Cell::new(0.0),related_ids:RefCell::new(Vec::new()),hovered:Cell::new(false)})),initWithFrame:r]
         };
         b.setTitle(&NSString::from_str(title));
         let accessible = if matches!(b.ivars().action, Action::Start(_)) {
@@ -393,6 +423,14 @@ impl ActionButton {
         }
         b.setBezelStyle(NSBezelStyle::SmallSquare);
         b.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+        if matches!(
+            b.ivars().action,
+            Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_)
+        ) {
+            b.setBordered(false);
+            b.setAlignment(NSTextAlignment::Center);
+            b.setUsesSingleLineMode(true);
+        }
         if matches!(b.ivars().action, Action::Window(_) | Action::Pin(..)) {
             b.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
         }
@@ -682,6 +720,24 @@ fn tick(state: &Shared) {
     autoreleasepool(|_| tick_inner(state));
 }
 fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
+    if s.pending_tab.is_some_and(|(id, index, at)| {
+        at.elapsed() >= Duration::from_secs(2)
+            || snapshot.control_error.is_some()
+            || !snapshot.trusted
+            || snapshot
+                .windows
+                .iter()
+                .find(|w| w.id == id)
+                .is_none_or(|w| {
+                    w.tabs
+                        .iter()
+                        .find(|t| t.id == index)
+                        .is_none_or(|t| t.selected)
+                })
+    }) {
+        s.pending_tab = None;
+        s.dirty = true;
+    }
     if s.pending_focus.is_some_and(|pending| {
         pending.resolved(
             snapshot.windows.iter().find(|w| w.focused).map(|w| w.id),
@@ -792,6 +848,12 @@ fn tick_inner(state: &Shared) {
             .is_some_and(|pending| pending.expired(Instant::now()))
         {
             s.pending_focus = None;
+            s.dirty = true;
+        }
+        if s.pending_tab
+            .is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(2))
+        {
+            s.pending_tab = None;
             s.dirty = true;
         }
         if let Ok(apps) = s.apps_rx.try_recv() {
@@ -912,6 +974,7 @@ struct BarSettings {
     hidden_displays: Vec<u32>,
     theme: String,
     show_tabs: bool,
+    compact_related_windows: bool,
     show_hidden: bool,
     discord_hidden: bool,
     all_displays: bool,
@@ -938,6 +1001,7 @@ impl From<&Config> for BarSettings {
             hidden_displays: c.hidden_displays.clone(),
             theme: c.theme.clone(),
             show_tabs: c.show_tabs,
+            compact_related_windows: c.compact_related_windows,
             show_hidden: c.show_hidden,
             discord_hidden: c.discord_hidden,
             all_displays: c.all_displays,
@@ -1055,7 +1119,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         .iter()
         .filter(|w| {
             w.on_space
-                && (c.show_tabs || !w.tabbed_hidden)
+                && (c.compact_related_windows || c.show_tabs || !w.tabbed_hidden)
                 && !c.blacklist.contains(&w.bundle)
                 && (c.show_hidden || !w.hidden)
                 && !(c.discord_hidden && w.bundle == "com.hnc.Discord" && w.hidden)
@@ -1112,6 +1176,21 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             }
             tasks.sort_by_cached_key(|w| apps[w.bundle.as_str()]);
         }
+        let groups = if c.compact_related_windows {
+            crate::related_windows::groups(&tasks)
+        } else {
+            tasks
+                .iter()
+                .map(|w| crate::related_windows::Group {
+                    main: w,
+                    children: Vec::new(),
+                })
+                .collect()
+        };
+        let groups: Vec<_> = groups
+            .into_iter()
+            .filter(|g| c.show_tabs || !g.main.tabbed_hidden)
+            .collect();
         let hidden = {
             let s = state.borrow();
             s.hidden_now.contains(&d)
@@ -1133,14 +1212,26 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         let iw = h + 4.0;
         let sort_width = if c.show_sort { iw } else { 0.0 };
         let fixed = (pins.len() + usize::from(c.show_start)) as f64 * iw + sort_width;
+        let has_bubbles = c.compact_related_windows
+            && groups
+                .iter()
+                .any(|g| !g.children.is_empty() || g.main.tab_count > 1);
         let tw = if c.show_titles {
-            ((f.size.width - fixed - 8.0) / tasks.len().max(1) as f64)
-                .clamp(48.0, c.max_width * c.scale / 100.0)
+            ((f.size.width - fixed - 8.0) / groups.len().max(1) as f64).clamp(
+                if has_bubbles {
+                    54.0 * c.scale / 100.0
+                } else {
+                    48.0
+                },
+                c.max_width * c.scale / 100.0,
+            )
+        } else if has_bubbles {
+            iw + 24.0 * c.scale / 100.0
         } else {
             iw
         };
         let mut x = if c.center {
-            ((f.size.width - fixed - tw * tasks.len() as f64) / 2.0).max(0.0)
+            ((f.size.width - fixed - tw * groups.len() as f64) / 2.0).max(0.0)
         } else {
             0.0
         };
@@ -1198,7 +1289,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             buttons.insert(b.ivars().action.clone(), b);
         }
         let available = (f.size.width - x).max(1.0);
-        let overflow = tw * tasks.len() as f64 > available;
+        let overflow = tw * groups.len() as f64 > available;
         let arrow_width = if overflow {
             h.min(available / 3.0)
         } else {
@@ -1213,7 +1304,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         if scroll.frame() != viewport {
             scroll.setFrame(viewport);
         }
-        let task_size = NSSize::new((tw * tasks.len() as f64).max(viewport.size.width), h);
+        let task_size = NSSize::new((tw * groups.len() as f64).max(viewport.size.width), h);
         if task_root.frame().size != task_size {
             task_root.setFrameSize(task_size);
         }
@@ -1246,7 +1337,8 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         }
         fixed_children.push(scroll.clone().into_super().into_super());
         x = 0.0;
-        for w in tasks {
+        for group in groups {
+            let w = group.main;
             let title = if !c.show_titles {
                 std::borrow::Cow::Borrowed("")
             } else {
@@ -1290,7 +1382,16 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                     "\n⌘W while hovering closes this window",
                 ],
             );
-            b.set_window_focus(focused_id == Some(w.id), c.font_size);
+            b.set_window_focus(
+                focused_id == Some(w.id) || group.children.iter().any(|w| focused_id == Some(w.id)),
+                c.font_size,
+            );
+            let mut ids = b.ivars().related_ids.borrow_mut();
+            if !ids.iter().copied().eq(group.children.iter().map(|w| w.id)) {
+                ids.clear();
+                ids.extend(group.children.iter().map(|w| w.id));
+            }
+            drop(ids);
             let position = if c.show_titles {
                 NSCellImagePosition::ImageLeft
             } else {
@@ -1323,6 +1424,22 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             }
             set_badge(state, &b, &w.bundle);
             task_children.push(as_view(&b));
+            let reserved = if c.compact_related_windows {
+                related::render_bubbles(
+                    state,
+                    &group,
+                    rect(x, 0.0, tw, h),
+                    focused_id,
+                    &mut old,
+                    &mut buttons,
+                    &mut task_children,
+                )
+            } else {
+                0.0
+            };
+            if b.ivars().reserved_width.replace(reserved) != reserved {
+                NSView::setNeedsDisplay(&b, true);
+            }
             buttons.insert(b.ivars().action.clone(), b);
             x += tw;
             if state.borrow().gui_smoke.is_none()
@@ -1401,14 +1518,29 @@ fn activate_window(state: &Shared, id: u32) {
         {
             return;
         }
+        s.pending_tab = None;
         let previous = s.focused_id();
         s.pending_focus = Some(active_feedback::PendingFocus::new(id, started));
         s.bars
             .iter()
             .flat_map(|bar| bar.buttons.values())
             .filter_map(|button| match button.ivars().action {
-                Action::Window(window) if window == id || Some(window) == previous => {
-                    Some((button.clone(), window == id, s.config.font_size))
+                Action::Window(window) | Action::Bubble(window) => {
+                    let related = button.ivars().related_ids.borrow();
+                    let focused = window == id || related.contains(&id);
+                    let was_focused = Some(window) == previous
+                        || previous.is_some_and(|id| related.contains(&id));
+                    (focused || was_focused).then(|| {
+                        (
+                            button.clone(),
+                            focused,
+                            if matches!(button.ivars().action, Action::Bubble(_)) {
+                                9.0 * s.config.scale / 100.0
+                            } else {
+                                s.config.font_size
+                            },
+                        )
+                    })
                 }
                 _ => None,
             })
@@ -1508,7 +1640,21 @@ fn dispatch(state: &Shared, a: Action) {
                 state.borrow().command(Command::Close(id));
             }
         }
-        Action::Raise(id) => {
+        Action::RelatedMore(id) => related::show_more(state, id),
+        Action::Tab(id, index) => related::select_tab(state, id, index),
+        Action::CloseTab(id, index) => {
+            let s = state.borrow();
+            if let Some(tab) = s
+                .snapshot
+                .windows
+                .iter()
+                .find(|w| w.id == id)
+                .and_then(|w| w.tabs.iter().find(|t| t.id == index))
+            {
+                s.command(Command::CloseTab(tab.id));
+            }
+        }
+        Action::Raise(id) | Action::Bubble(id) => {
             activate_window(state, id);
         }
         Action::Preview(id) => {
@@ -1517,7 +1663,7 @@ fn dispatch(state: &Shared, a: Action) {
                 s.bars.iter().find_map(|b| {
                     b.buttons
                         .values()
-                        .find(|v| matches!(v.ivars().action,Action::Window(w) if w==id))
+                        .find(|v| matches!(v.ivars().action,Action::Window(w)|Action::Bubble(w) if w==id))
                         .map(|v| {
                             b.panel
                                 .convertRectToScreen(v.convertRect_toView(v.bounds(), None))
@@ -1822,7 +1968,7 @@ fn menu_item(s: &Shared, m: &NSMenu, t: &str, a: Action) {
 }
 fn context_menu(s: &Shared, a: Option<&Action>) -> Retained<NSMenu> {
     let m = NSMenu::new(MainThreadMarker::new().unwrap());
-    if let Some(Action::Window(id)) = a {
+    if let Some(Action::Window(id) | Action::Bubble(id)) = a {
         let w = s
             .borrow()
             .snapshot
@@ -1845,6 +1991,9 @@ fn context_menu(s: &Shared, a: Option<&Action>) -> Retained<NSMenu> {
                 menu_item(s, &m, t, a);
             }
         }
+    } else if let Some(Action::Tab(id, index)) = a {
+        menu_item(s, &m, "Select Tab", Action::Tab(*id, *index));
+        menu_item(s, &m, "Close Tab", Action::CloseTab(*id, *index));
     } else if let Some(Action::Pin(b, a)) = a {
         menu_item(s, &m, "Open Application", Action::Pin(b.clone(), a.clone()));
         menu_item(
@@ -1928,7 +2077,9 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
         .and_then(|b| {
             b.buttons.values().find(|v| {
                 let r = v.convertRect_toView(v.bounds(), None);
-                x >= r.origin.x && x < r.origin.x + r.size.width
+                matches!(v.ivars().action, Action::Window(_) | Action::Pin(..))
+                    && x >= r.origin.x
+                    && x < r.origin.x + r.size.width
             })
         })
         .map(|b| b.ivars().action.clone());
@@ -1940,8 +2091,24 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
                 s.order.iter().position(|id| id == from),
                 s.order.iter().position(|id| *id == to),
             ) {
-                let v = s.order.remove(a);
-                s.order.insert(b, v);
+                let mut moving = vec![*from];
+                if let Some(button) = s
+                    .bars
+                    .iter()
+                    .find_map(|bar| bar.buttons.get(&Action::Window(*from)))
+                {
+                    moving.extend(button.ivars().related_ids.borrow().iter().copied());
+                }
+                let target = s.order[b];
+                let after = a < b;
+                s.order.retain(|id| !moving.contains(id));
+                let at = s
+                    .order
+                    .iter()
+                    .position(|id| *id == target)
+                    .unwrap_or(s.order.len());
+                let at = (at + usize::from(after)).min(s.order.len());
+                s.order.splice(at..at, moving);
                 s.dirty = true;
                 return true;
             }
@@ -2394,6 +2561,7 @@ fn bool_setting<'a>(c: &'a mut Config, k: &str) -> Option<&'a mut bool> {
         "show_badges" => &mut c.show_badges,
         "show_all_spaces" => &mut c.show_all_spaces,
         "show_tabs" => &mut c.show_tabs,
+        "compact_related_windows" => &mut c.compact_related_windows,
         "group_by_app" => &mut c.group_by_app,
         "task_dragging" => &mut c.task_dragging,
         "pin_dragging" => &mut c.pin_dragging,
@@ -2601,7 +2769,14 @@ fn build_preferences(state: &Shared, page: usize) {
             ("show_hidden", "Show hidden windows"),
             ("show_badges", "Show app notification badges"),
             ("show_all_spaces", "Indicate apps assigned to all Spaces"),
-            ("show_tabs", "Treat standard tabs as separate windows"),
+            (
+                "compact_related_windows",
+                "Show related windows as compact bubbles",
+            ),
+            (
+                "show_tabs",
+                "Show inactive native tabs as separate tiles when ungrouped",
+            ),
             ("group_by_app", "Group tasks by app chronologically"),
             ("task_dragging", "Reorder tasks by dragging"),
             ("pin_dragging", "Reorder pinned apps by dragging"),
@@ -3314,6 +3489,7 @@ fn run_mode(
         config,
         snapshot: Snapshot::default(),
         pending_focus: None,
+        pending_tab: None,
         pending_system_sort: false,
         received_snapshot: false,
         bars: vec![],

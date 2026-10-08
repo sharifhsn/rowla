@@ -241,6 +241,7 @@ struct App {
     pending: Option<VecDeque<Owned>>,
     seen: HashSet<u32>,
     windows: HashMap<u32, Window>,
+    tab_cursor: HashMap<u32, usize>,
     stale: bool,
     last: Instant,
     focus: Option<Owned>,
@@ -391,6 +392,7 @@ struct Service {
     apps: HashMap<i32, App>,
     queue: FairQueue,
     elements: HashMap<u32, Owned>,
+    tab_elements: HashMap<u64, TabElement>,
     visible: HashSet<u32>,
     spaces: HashSet<i64>,
     cg: Vec<PublicWindow>,
@@ -411,6 +413,7 @@ impl Service {
             apps: HashMap::new(),
             queue: FairQueue::default(),
             elements: HashMap::new(),
+            tab_elements: HashMap::new(),
             visible: HashSet::new(),
             spaces: HashSet::new(),
             cg: vec![],
@@ -432,6 +435,7 @@ impl Service {
         if !trusted() {
             self.apps.clear();
             self.elements.clear();
+            self.tab_elements.clear();
             self.queue.set_live([]);
             return;
         }
@@ -515,6 +519,7 @@ impl Service {
                         pending: None,
                         seen: HashSet::new(),
                         windows: HashMap::new(),
+                        tab_cursor: HashMap::new(),
                         stale: true,
                         last: Instant::now() - Duration::from_secs(10),
                         focus: None,
@@ -531,6 +536,16 @@ impl Service {
             .flat_map(|a| a.windows.keys().copied())
             .collect();
         self.elements.retain(|id, _| valid.contains(id));
+        let tabs: HashSet<_> = self
+            .apps
+            .values()
+            .flat_map(|a| a.windows.values())
+            .flat_map(|w| w.tabs.iter().map(|t| t.id))
+            .collect();
+        // Keep obsolete controls for one second to accept a queued rapid click.
+        // Closed controls reject AX actions; this cache is capped at 4096.
+        self.tab_elements
+            .retain(|id, t| tabs.contains(id) || t.seen.elapsed() < Duration::from_secs(1));
     }
     fn poll(&mut self) {
         unsafe {
@@ -562,6 +577,7 @@ impl Service {
             return false;
         };
         let started = Instant::now();
+        let mut tabs_progress = false;
         let app = self.apps.get_mut(&pid).unwrap();
         let (_, status) = ipc_budget::run(SLICE, || {
             if app.observer.is_none() {
@@ -617,6 +633,32 @@ impl Service {
                     .or_else(|| match_id(pid, &title, b, &self.cg));
                 let minimized = bool_attr(el.0, ns_string!("AXMinimized"));
                 let fullscreen = bool_attr(el.0, ns_string!("AXFullScreen"));
+                // A standard child window can also expose an explicit owner.
+                // Optional parent discovery cannot discard the main record.
+                let parent_id = ipc_budget::run(
+                    ipc_budget::remaining().min(Duration::from_millis(3)),
+                    || parent_window(el.0),
+                )
+                .0;
+                let tab_info = if role == "AXStandardWindow" {
+                    // Optional tab metadata has its own short budget. A slow
+                    // tab bar cannot discard an otherwise usable window scan.
+                    ipc_budget::run(
+                        ipc_budget::remaining().min(Duration::from_millis(8)),
+                        || {
+                            native_tab_info(
+                                el.0,
+                                id.and_then(|id| app.windows.get(&id)),
+                                id.and_then(|id| app.tab_cursor.get(&id).copied())
+                                    .unwrap_or(0),
+                                &mut self.tab_elements,
+                            )
+                        },
+                    )
+                    .0
+                } else {
+                    Some((Vec::new(), 0, 0))
+                };
                 if !ipc_budget::healthy() {
                     if ipc_budget::discard_destroyed_element() {
                         continue;
@@ -629,6 +671,29 @@ impl Service {
                     app.coverage_complete = false;
                     continue;
                 };
+                let (mut tabs, tab_count, tab_cursor) = tab_info.unwrap_or_else(|| {
+                    app.windows
+                        .get(&id)
+                        .map(|w| {
+                            (
+                                w.tabs.clone(),
+                                w.tab_count,
+                                app.tab_cursor.get(&id).copied().unwrap_or(0),
+                            )
+                        })
+                        .unwrap_or_default()
+                });
+                tabs_progress |= tabs.iter().filter(|t| t.resolved).count()
+                    > app
+                        .windows
+                        .get(&id)
+                        .map_or(0, |w| w.tabs.iter().filter(|t| t.resolved).count());
+                if tabs.iter().filter(|t| t.title == title).count() == 1 {
+                    for tab in &mut tabs {
+                        tab.selected = tab.title == title;
+                    }
+                }
+                app.tab_cursor.insert(id, tab_cursor);
                 if b.2 < 40.0 || b.3 < 30.0 {
                     continue;
                 }
@@ -665,9 +730,14 @@ impl Service {
                             hidden: app.meta.hidden,
                             focused,
                             subordinate: role != "AXStandardWindow",
+                            parent_id,
+                            native_tabs: tab_count > 1,
+                            tabs,
+                            tab_count,
                             all_spaces: ws.len() > 1,
                             on_space,
-                            tabbed_hidden: !minimized
+                            tabbed_hidden: role == "AXStandardWindow"
+                                && !minimized
                                 && !app.meta.hidden
                                 && on_space
                                 && !self.visible.contains(&id)
@@ -707,6 +777,7 @@ impl Service {
         let finished = app.pending.is_some() && !continuing && !failed;
         if finished {
             retain_complete(&mut app.windows, &app.seen, app.coverage_complete);
+            app.tab_cursor.retain(|id, _| app.windows.contains_key(id));
             app.pending = None;
             app.focus = None;
             app.stale = !app.coverage_complete;
@@ -725,9 +796,16 @@ impl Service {
         if failed {
             self.status.timeouts += 1;
         }
+        let tabs_pending = self.apps[&pid]
+            .windows
+            .values()
+            .any(|w| w.tabs.len() < w.tab_count.min(128) || w.tabs.iter().any(|t| !t.resolved));
         self.queue.finish(
             pid,
-            continuing || failed || (!finished && status.exhausted),
+            continuing
+                || (tabs_pending && tabs_progress)
+                || failed
+                || (!finished && status.exhausted),
             failed,
             Instant::now(),
         );
@@ -813,6 +891,8 @@ struct Activation {
     next: Instant,
     deadline: Instant,
     attempts: u8,
+    auxiliary: bool,
+    tab: Option<u64>,
 }
 impl Activation {
     fn new(id: u32, pid: i32, source: i32, now: Instant) -> Self {
@@ -823,6 +903,8 @@ impl Activation {
             next: now + Duration::from_millis(40),
             deadline: now + Duration::from_secs(1),
             attempts: 1,
+            auxiliary: false,
+            tab: None,
         }
     }
     fn permits_front(&self, front: i32) -> bool {
@@ -855,20 +937,32 @@ fn advance_activation(service: &mut Service, pending: &mut Option<Activation>) {
         *pending = None;
         return;
     }
-    let Some(window) = service.elements.get(&request.id) else {
-        *pending = None;
-        return;
-    };
     let (focused, _) = ipc_budget::run(Duration::from_millis(20), || {
         front == request.pid
-            && service.apps.get(&request.pid).is_some_and(|app| {
-                attr(app.root.0, ns_string!("AXFocusedWindow")).is_some_and(|focus| {
-                    // SAFETY: both retained AX elements stay on this worker
-                    // and remain alive throughout the identity comparison.
-                    unsafe { CFEqual(focus.0, window.0) }
+            && if let Some(tab) = request.tab {
+                service
+                    .tab_elements
+                    .get(&tab)
+                    .is_some_and(|target| focused_tab_window(target).is_some())
+            } else {
+                service.elements.get(&request.id).is_some_and(|window| {
+                    service.apps.get(&request.pid).is_some_and(|app| {
+                        attr(app.root.0, ns_string!("AXFocusedWindow")).is_some_and(|focus| {
+                            // SAFETY: the worker retains both elements for this comparison.
+                            unsafe { CFEqual(focus.0, window.0) }
+                        })
+                    })
                 })
-            })
+            }
     });
+    if request
+        .tab
+        .is_some_and(|tab| !service.tab_elements.contains_key(&tab))
+        || (request.tab.is_none() && !service.elements.contains_key(&request.id))
+    {
+        *pending = None;
+        return;
+    }
     if focused {
         *pending = None;
         service.queue.notify_all();
@@ -880,13 +974,24 @@ fn advance_activation(service: &mut Service, pending: &mut Option<Activation>) {
         return;
     }
     let (result, status) = ipc_budget::run(Duration::from_millis(120), || {
-        execute(Command::Activate(request.id, false), &service.elements)
+        execute(
+            request
+                .tab
+                .map_or(Command::Activate(request.id, false), Command::SelectTab),
+            &service.elements,
+            &service.tab_elements,
+        )
     });
-    if activation_retryable(status) {
+    if request.auxiliary && result.is_ok() && status.error.is_none() && !status.exhausted {
+        // A non-key utility panel can be raised successfully while its owner's
+        // main window keeps keyboard focus. Do not repeatedly activate the app.
+        *pending = None;
+    } else if activation_retryable(status) {
         request.retried(Instant::now());
     } else {
         service.control_error = result
             .err()
+            .map(|error| format!("{error}: {status:?}"))
             .or_else(|| Some(format!("Window activation did not complete: {status:?}")));
         *pending = None;
     }
@@ -901,7 +1006,7 @@ fn worker_core(
     service.fixture_pid = fixture;
     let mut next_publish = Instant::now();
     let mut activation: Option<Activation> = None;
-    let mut deferred_closes: HashMap<u32, (Instant, Instant)> = HashMap::new();
+    let mut deferred_closes: HashMap<DeferredClose, (Instant, Instant)> = HashMap::new();
     // Opening a cold app and Dock changes can involve LaunchServices waits.
     // Their bounded queue never holds up the window-control actor.
     let (slow_tx, slow_rx) = std::sync::mpsc::sync_channel(4);
@@ -912,7 +1017,10 @@ fn worker_core(
                 break;
             }
             let result = autoreleasepool(|_| {
-                ipc_budget::run(Duration::from_secs(4), || execute(command, &HashMap::new())).0
+                ipc_budget::run(Duration::from_secs(4), || {
+                    execute(command, &HashMap::new(), &HashMap::new())
+                })
+                .0
             });
             let _ = result_tx.try_send(result);
         }
@@ -932,37 +1040,66 @@ fn worker_core(
             Ok(command @ (Command::Launch(..) | Command::Dock(_))) => {
                 if matches!(command, Command::Launch(..)) {
                     activation = None;
+                    deferred_closes.retain(|target, _| matches!(target, DeferredClose::Window(_)));
                 }
                 if slow_tx.try_send(command).is_err() {
                     service.control_error =
                         Some("Application launch queue is busy; try again shortly".into());
                 }
             }
-            Ok(Command::Close(id)) if deferred_closes.contains_key(&id) => {}
+            Ok(Command::Close(id)) if deferred_closes.contains_key(&DeferredClose::Window(id)) => {}
+            Ok(Command::CloseTab(id)) if deferred_closes.contains_key(&DeferredClose::Tab(id)) => {}
             Ok(command) => {
                 // Discovery and automatic resize cannot supersede a click.
                 // Every other user control cancels recovery of an older target.
                 if !matches!(command, Command::Resize(..)) {
                     activation = None;
+                    deferred_closes.retain(|target, _| matches!(target, DeferredClose::Window(_)));
                 }
                 let requested = match command {
                     Command::Activate(id, false) => service
                         .apps
                         .iter()
                         .find(|(_, app)| app.windows.contains_key(&id))
-                        .map(|(pid, _)| Activation::new(id, *pid, front_pid(), Instant::now())),
+                        .map(|(pid, app)| {
+                            let mut request =
+                                Activation::new(id, *pid, front_pid(), Instant::now());
+                            request.auxiliary = app.windows[&id].subordinate;
+                            request
+                        }),
+                    Command::SelectTab(tab) | Command::CloseTab(tab) => {
+                        service.tab_elements.get(&tab).and_then(tab_pid).map(|pid| {
+                            let mut request = Activation::new(0, pid, front_pid(), Instant::now());
+                            request.tab = Some(tab);
+                            request
+                        })
+                    }
                     _ => None,
                 };
+                let closing_tab = matches!(command, Command::CloseTab(_));
                 let (result, status) = autoreleasepool(|_| {
                     ipc_budget::run(Duration::from_millis(160), || {
-                        execute(command, &service.elements)
+                        execute(command, &service.elements, &service.tab_elements)
                     })
                 });
-                service.control_error = result.as_ref().err().cloned().or_else(|| {
-                    (status.exhausted || status.error.is_some())
-                        .then(|| format!("Window control did not complete: {status:?}"))
-                });
-                if requested.is_some() && activation_retryable(status) {
+                service.control_error = result
+                    .as_ref()
+                    .err()
+                    .map(|error| {
+                        if status.error.is_some() {
+                            format!("{error}: {status:?}")
+                        } else {
+                            error.clone()
+                        }
+                    })
+                    .or_else(|| {
+                        (status.exhausted || status.error.is_some())
+                            .then(|| format!("Window control did not complete: {status:?}"))
+                    });
+                if requested.as_ref().is_some_and(|r| {
+                    !r.auxiliary || result.is_err() || status.error.is_some() || status.exhausted
+                }) && activation_retryable(status)
+                {
                     activation = requested.map(|mut request| {
                         // Keep recovery out of the first command's time slice.
                         request.next = Instant::now() + Duration::from_millis(40);
@@ -972,20 +1109,36 @@ fn worker_core(
                     // a bounded terminal failure, instead of discarding the click.
                     service.control_error = None;
                 }
-                if let Ok(Some(id)) = result {
+                // Selection recovery may have a late first reply. Keep close
+                // pending until the exact selected identity is confirmed.
+                let deferred = if closing_tab && activation.is_some() {
+                    activation
+                        .as_ref()
+                        .and_then(|r| r.tab)
+                        .map(DeferredClose::Tab)
+                } else {
+                    result.ok().flatten()
+                };
+                if let Some(id) = deferred {
                     if deferred_closes.len() < 32 || deferred_closes.contains_key(&id) {
                         deferred_closes.entry(id).or_insert((
                             Instant::now() + Duration::from_millis(50),
                             Instant::now() + Duration::from_secs(2),
                         ));
                     } else {
-                        service.control_error = Some("Minimized close queue is full".into());
+                        service.control_error = Some("Window close queue is full".into());
                     }
                 }
                 service.queue.notify_all();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             _ => {}
+        }
+        if activation
+            .as_ref()
+            .is_some_and(|request| request.tab.is_some() && !request.permits_front(front_pid()))
+        {
+            deferred_closes.retain(|target, _| matches!(target, DeferredClose::Window(_)));
         }
         autoreleasepool(|_| advance_activation(&mut service, &mut activation));
         // Wait for native restore completion without blocking other controls.
@@ -995,15 +1148,31 @@ fn worker_core(
             .map(|(id, timing)| (*id, *timing))
         {
             deferred_closes.remove(&id);
-            if !service.elements.contains_key(&id) {
+            let available = match id {
+                DeferredClose::Window(id) => service.elements.contains_key(&id),
+                DeferredClose::Tab(id) => service.tab_elements.get(&id).is_some_and(|target| {
+                    activation
+                        .as_ref()
+                        .is_some_and(|request| request.tab == Some(id))
+                        || tab_pid(target) == Some(front_pid())
+                }),
+            };
+            if !available {
                 service.queue.notify_all();
             } else if Instant::now() >= deadline {
                 service.control_error =
-                    Some("Minimized window did not become available for close".into());
+                    Some("The target did not become available for close".into());
             } else {
                 let (result, status) = autoreleasepool(|_| {
                     ipc_budget::run(Duration::from_millis(160), || {
-                        execute(Command::CloseRestored(id), &service.elements)
+                        execute(
+                            match id {
+                                DeferredClose::Window(id) => Command::CloseRestored(id),
+                                DeferredClose::Tab(id) => Command::CloseSelectedTab(id),
+                            },
+                            &service.elements,
+                            &service.tab_elements,
+                        )
                     })
                 });
                 match result {
@@ -1012,6 +1181,13 @@ fn worker_core(
                             .insert(id, (Instant::now() + Duration::from_millis(50), deadline));
                     }
                     Ok(None) if !status.exhausted && status.error.is_none() => {
+                        if let DeferredClose::Tab(tab) = id
+                            && activation
+                                .as_ref()
+                                .is_some_and(|request| request.tab == Some(tab))
+                        {
+                            activation = None;
+                        }
                         service.queue.notify_all();
                     }
                     Err(error) => service.control_error = Some(error),
@@ -1119,6 +1295,166 @@ pub(super) fn check_fixture_activation(pid: i32) -> bool {
         serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
         "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
         "latest_target_wins":latest_target_wins,"error":error,"cf_live":cf_counts().0})
+    );
+    passed
+}
+pub(super) fn check_fixture_related(pid: i32) -> bool {
+    let (tx, rx) = std::sync::mpsc::sync_channel(8);
+    let (snap_tx, snap_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || worker_core(rx, snap_tx, Some(pid)));
+    let mut snapshot = Snapshot::default();
+    let pump = |snapshot: &mut Snapshot| {
+        objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
+            &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
+        while let Ok(value) = snap_rx.try_recv() {
+            *snapshot = value;
+        }
+    };
+    let fixture =
+        |w: &&Window| w.pid == pid && w.bundle == "io.sharif.taskbarrust.interactionfixture";
+    let discovery = Instant::now();
+    while discovery.elapsed() < Duration::from_secs(3) {
+        pump(&mut snapshot);
+        if snapshot
+            .windows
+            .iter()
+            .filter(fixture)
+            .any(|w| w.tabs.len() == 2 && w.tabs.iter().all(|t| t.resolved))
+            && snapshot
+                .windows
+                .iter()
+                .filter(fixture)
+                .any(|w| w.subordinate)
+        {
+            break;
+        }
+    }
+    let groups = crate::related_windows::groups(
+        &snapshot.windows.iter().filter(fixture).collect::<Vec<_>>(),
+    );
+    let grouped =
+        groups.len() == 1 && groups[0].children.len() == 1 && groups[0].main.tab_count == 2;
+    let mut selected = 0;
+    let mut errors = Vec::new();
+    let mut stale_rejected = false;
+    for index in [1usize, 0, 1, 0] {
+        let Some(w) = snapshot
+            .windows
+            .iter()
+            .filter(fixture)
+            .find(|w| w.tabs.len() == 2 && w.tabs.iter().all(|t| t.resolved))
+        else {
+            break;
+        };
+        let token = w.tabs[index].id;
+        let title = w.tabs[index].title.clone();
+        if !stale_rejected {
+            let queued = tx.try_send(Command::SelectTab(u64::MAX)).is_ok();
+            let wait = Instant::now();
+            let mut rejected = false;
+            while wait.elapsed() < Duration::from_millis(250) {
+                pump(&mut snapshot);
+                rejected |= snapshot
+                    .control_error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("Native tab changed"));
+            }
+            stale_rejected = queued && rejected;
+        }
+        if tx.try_send(Command::SelectTab(token)).is_err() {
+            break;
+        }
+        let wait = Instant::now();
+        while wait.elapsed() < Duration::from_secs(2) {
+            pump(&mut snapshot);
+            if let Some(error) = &snapshot.control_error
+                && !error.contains("Native tab changed")
+                && errors.len() < 16
+                && !errors.contains(error)
+            {
+                errors.push(error.clone());
+            }
+            if front_pid() == pid
+                && snapshot.windows.iter().filter(fixture).any(|w| {
+                    w.focused && w.title == title && w.tabs.get(index).is_some_and(|t| t.selected)
+                })
+            {
+                selected += 1;
+                break;
+            }
+        }
+    }
+    let mut auxiliary = false;
+    let mut auxiliary_metadata = serde_json::Value::Null;
+    if let Some(id) = snapshot
+        .windows
+        .iter()
+        .filter(fixture)
+        .find(|w| w.subordinate)
+        .map(|w| w.id)
+    {
+        let queued = tx.try_send(Command::Activate(id, false)).is_ok();
+        let wait = Instant::now();
+        let mut failed = false;
+        while wait.elapsed() < Duration::from_millis(1500) {
+            pump(&mut snapshot);
+            failed |= snapshot.control_error.is_some();
+        }
+        auxiliary_metadata = serde_json::json!({"queued":queued,"failed":failed,"front_is_fixture":front_pid()==pid,"window":snapshot.windows.iter().find(|w|w.id==id).map(|w|serde_json::json!({"hidden":w.hidden,"tabbed_hidden":w.tabbed_hidden,"on_space":w.on_space,"focused":w.focused})),"control_error":snapshot.control_error});
+        auxiliary = queued
+            && !failed
+            && front_pid() == pid
+            && snapshot
+                .windows
+                .iter()
+                .any(|w| w.id == id && !w.hidden && !w.tabbed_hidden && w.on_space);
+    }
+    let mut closed_only_tab = false;
+    if let Some(w) = snapshot
+        .windows
+        .iter()
+        .filter(fixture)
+        .find(|w| w.tabs.len() == 2 && w.tabs.iter().all(|t| t.resolved))
+    {
+        let token = w.tabs[1].id;
+        let queued = tx.try_send(Command::CloseTab(token)).is_ok();
+        let wait = Instant::now();
+        while wait.elapsed() < Duration::from_secs(1) {
+            pump(&mut snapshot);
+            if let Some(error) = &snapshot.control_error
+                && !error.contains("Native tab changed")
+                && errors.len() < 16
+                && !errors.contains(error)
+            {
+                errors.push(error.clone());
+            }
+        }
+        closed_only_tab = queued
+            && snapshot
+                .windows
+                .iter()
+                .filter(fixture)
+                .any(|w| !w.subordinate)
+            && snapshot
+                .windows
+                .iter()
+                .filter(fixture)
+                .all(|w| w.tab_count < 2);
+    }
+    let final_metadata:Vec<_>=snapshot.windows.iter().filter(fixture).map(|w|serde_json::json!({"id":w.id,"auxiliary":w.subordinate,"tab_count":w.tab_count,"tabs":w.tabs,"tabbed_hidden":w.tabbed_hidden,"focused":w.focused})).collect();
+    let _ = tx.send(Command::Stop);
+    drop(tx);
+    let _ = worker.join();
+    let passed = grouped
+        && selected == 4
+        && stale_rejected
+        && auxiliary
+        && closed_only_tab
+        && cf_counts().0 == 0;
+    println!(
+        "{}",
+        serde_json::json!({"passed":passed,"grouped":grouped,"tabs_selected":selected,"stale_target_rejected":stale_rejected,"auxiliary_shown":auxiliary,"auxiliary_metadata":auxiliary_metadata,"closed_only_tab":closed_only_tab,"final_fixture_metadata":final_metadata,"cf_live":cf_counts().0,"control_errors":errors})
     );
     passed
 }

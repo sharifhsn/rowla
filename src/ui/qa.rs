@@ -229,6 +229,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let snapshot_checks = check_snapshot_updates(state, count);
     eprintln!("Native UI check: system features");
     let system_features = check_system_features(state);
+    let related_windows = check_related_windows(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -246,6 +247,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && start_search["passed"] == true
         && snapshot_checks["passed"] == true
         && system_features["passed"] == true
+        && related_windows["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -256,9 +258,192 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_related_windows(state: &Shared) -> serde_json::Value {
+    let saved = {
+        let s = state.borrow();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            s.pending_focus,
+        )
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.compact_related_windows = true;
+        s.config.blacklist.clear();
+        s.config.hidden_displays.clear();
+        s.config.main_only = false;
+        s.hidden_now.clear();
+        s.config.show_tabs = true;
+        s.config.show_titles = true;
+        s.config.max_width = 200.0;
+        s.config.all_displays = true;
+        s.config.scale = 100.0;
+        s.pending_focus = None;
+        s.snapshot.windows = (1..=9)
+            .map(|id| Window {
+                id,
+                pid: 1,
+                app: "Related QA".into(),
+                bundle: "com.apple.TextEdit".into(),
+                title: if id == 1 {
+                    "Chat window".into()
+                } else {
+                    format!("Computer Use {id}")
+                },
+                subordinate: id > 1,
+                parent_id: (id > 1).then_some(1),
+                on_space: true,
+                width: if id == 1 { 600.0 } else { 200.0 },
+                height: if id == 1 { 400.0 } else { 100.0 },
+                ..Window::default()
+            })
+            .collect();
+        s.order = (1..=9).collect();
+    }
+    render(state);
+    let (parent, bubble, overflow, panel, root, created) = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        (
+            b.buttons[&Action::Window(1)].clone(),
+            b.buttons[&Action::Bubble(2)].clone(),
+            b.buttons[&Action::RelatedMore(1)].clone(),
+            b.panel.clone(),
+            b.root.clone(),
+            s.performance.buttons_created,
+        )
+    };
+    let compact = state.borrow().bars[0]
+        .buttons
+        .keys()
+        .filter(|a| matches!(a, Action::Window(_)))
+        .count()
+        == 1
+        && panel.frame().size.height == 32.0
+        && bubble.frame().size == NSSize::new(18.0, 18.0)
+        && overflow.title().to_string() == "+6"
+        && parent.ivars().reserved_width.get() > 0.0;
+    let mut hit_checks = Vec::new();
+    for b in [&parent, &bubble, &overflow] {
+        let p = b.convertPoint_toView(
+            NSPoint::new(
+                if std::ptr::eq(&**b, &*parent) {
+                    5.0
+                } else {
+                    9.0
+                },
+                9.0,
+            ),
+            None,
+        );
+        let hit = root.hitTest(root.convertPoint_fromView(p, None));
+        hit_checks.push(
+            hit.as_deref()
+                .is_some_and(|hit| std::ptr::eq(hit, &**b as &NSView)),
+        );
+    }
+    let point = bubble.convertPoint_toView(NSPoint::new(9.0, 9.0), None);
+    let close_target =
+        hover_close::tile_at(&state.borrow().bars[0], panel.convertPointToScreen(point)) == Some(2);
+    bubble.mouseDown(&mouse_event(&panel, NSEventType::LeftMouseDown, point));
+    bubble.mouseUp(&mouse_event(&panel, NSEventType::LeftMouseUp, point));
+    let instant = state.borrow().focused_id() == Some(2)
+        && parent.ivars().window_style.get().is_some_and(|v| v.focused)
+        && bubble.ivars().window_style.get().is_some_and(|v| v.focused);
+    for _ in 0..100 {
+        autoreleasepool(|_| render(state));
+    }
+    let reused = state.borrow().performance.buttons_created == created;
+    let screenshot = render_fixture_view(&root, "related-bubbles.png");
+    {
+        let mut s = state.borrow_mut();
+        s.config.scale = 60.0;
+        s.config.max_width = 60.0;
+        s.config.show_titles = false;
+    }
+    render(state);
+    let narrow = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        !b.buttons.keys().any(|a| matches!(a, Action::Bubble(_)))
+            && b.buttons[&Action::RelatedMore(1)].title().to_string() == "+8"
+            && (b.panel.frame().size.height - 19.2).abs() < 1.0
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.scale = 100.0;
+        s.config.max_width = 200.0;
+        s.config.show_titles = true;
+        s.snapshot.windows.retain(|w| w.id == 1 || w.id == 2);
+        let main = &mut s.snapshot.windows[0];
+        main.title = "Terminal".into();
+        main.tab_count = 2;
+        main.native_tabs = true;
+        main.tabs = vec![
+            crate::models::WindowTab {
+                id: 101,
+                resolved: true,
+                title: "Build".into(),
+                selected: true,
+            },
+            crate::models::WindowTab {
+                id: 102,
+                resolved: true,
+                title: "Logs".into(),
+                selected: false,
+            },
+        ];
+        s.pending_focus = None;
+    }
+    render(state);
+    let (tab, panel, root) = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        (
+            b.buttons[&Action::Tab(1, 102)].clone(),
+            b.panel.clone(),
+            b.root.clone(),
+        )
+    };
+    let point = tab.convertPoint_toView(NSPoint::new(9.0, 9.0), None);
+    let tab_hit = root
+        .hitTest(root.convertPoint_fromView(point, None))
+        .is_some_and(|hit| std::ptr::eq(&*hit, &*tab as &NSView));
+    panel.orderFrontRegardless();
+    let tab_close = hover_close::action_at(
+        &state.borrow(),
+        panel.convertPointToScreen(point),
+        panel.windowNumber(),
+    ) == Some(Action::CloseTab(1, 102));
+    panel.orderOut(None);
+    tab.mouseDown(&mouse_event(&panel, NSEventType::LeftMouseDown, point));
+    tab.mouseUp(&mouse_event(&panel, NSEventType::LeftMouseUp, point));
+    let tab_feedback = tab.ivars().window_style.get().is_some_and(|s| s.focused)
+        && state
+            .borrow()
+            .pending_tab
+            .is_some_and(|(_, id, _)| id == 102);
+    render(state);
+    let pending_stable = state.borrow().bars[0].buttons[&Action::Tab(1, 102)]
+        .ivars()
+        .window_style
+        .get()
+        .is_some_and(|s| s.focused);
+    let native_screenshot = render_fixture_view(&root, "related-bubbles.png");
+    {
+        let mut s = state.borrow_mut();
+        (s.config, s.snapshot, s.order, s.pending_focus) = saved;
+        s.pending_tab = None;
+    }
+    render(state);
+    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&narrow&&screenshot&&tab_hit&&tab_close&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"instant_feedback":instant,"controls_reused":reused,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
 }
 
 fn check_system_features(state: &Shared) -> serde_json::Value {
@@ -760,6 +945,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.config.show_sort = true;
+        s.config.compact_related_windows = false;
         s.config.group_by_app = true;
         s.config.pins = vec![Pin {
             bundle: "com.apple.finder".into(),

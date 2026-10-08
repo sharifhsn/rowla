@@ -1,6 +1,7 @@
 //! macOS window service. All AX elements belong to this worker; the UI receives values.
 //! Every Core Foundation Create/Copy result has exactly one owner and release.
 use crate::config::Config;
+use crate::ipc_budget;
 use objc2::{
     msg_send,
     rc::Retained,
@@ -64,6 +65,12 @@ unsafe extern "C" {}
 unsafe extern "C" {}
 
 struct Owned(Ref);
+struct TabElement {
+    element: Owned,
+    owner: Owned,
+    seen: Instant,
+}
+static NEXT_TAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static CF_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static CF_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 fn owned(p: Ref) -> Owned {
@@ -210,6 +217,9 @@ pub(crate) use crate::models::{Application, Snapshot, Window};
 #[derive(Clone, Debug)]
 pub enum Command {
     Activate(u32, bool),
+    SelectTab(u64),
+    CloseTab(u64),
+    CloseSelectedTab(u64),
     Minimize(u32),
     Close(u32),
     CloseRestored(u32),
@@ -312,6 +322,156 @@ fn geometry(el: Ref) -> (f64, f64, f64, f64) {
     (p.x, p.y, s.width, s.height)
 }
 
+fn native_tab_group(el: Ref) -> Option<Owned> {
+    let children = attr(el, ns_string!("AXChildren"))?;
+    // Native AppKit tab bars are direct window children. Do not descend into
+    // web content or terminal panes, or retain their accessibility objects.
+    for child in array(children.0).into_iter().take(16) {
+        if text_attr(child, ns_string!("AXRole")) == "AXTabGroup" {
+            // SAFETY: retain this borrowed array element before releasing its array.
+            return unsafe { Owned::from_borrowed(child) };
+        }
+        if ipc_budget::expired() {
+            break;
+        }
+    }
+    None
+}
+fn native_tab_info(
+    el: Ref,
+    previous: Option<&Window>,
+    cursor: usize,
+    cache: &mut HashMap<u64, TabElement>,
+) -> Option<(Vec<crate::models::WindowTab>, usize, usize)> {
+    // Finish names from the retained controls on the next slice. Repeatedly
+    // traversing the tab bar can otherwise spend the entire short budget.
+    let pending = previous.filter(|w| {
+        w.tabs.iter().any(|t| !t.resolved) && w.tabs.iter().all(|t| cache.contains_key(&t.id))
+    });
+    let mut source = None;
+    let (raw, count) = if let Some(w) = pending {
+        (
+            w.tabs
+                .iter()
+                .map(|t| cache[&t.id].element.0)
+                .collect::<Vec<_>>(),
+            w.tab_count,
+        )
+    } else {
+        let Some(group) = native_tab_group(el) else {
+            return ipc_budget::healthy().then_some((Vec::new(), 0, 0));
+        };
+        let tabs = attr(group.0, ns_string!("AXTabs"))?;
+        let raw = array(tabs.0);
+        let count = raw.len();
+        source = Some(tabs);
+        (raw, count)
+    };
+    let limit = count.min(128);
+    let mut result = previous
+        .filter(|w| w.tab_count == count)
+        .map(|w| w.tabs.clone())
+        .unwrap_or_default();
+    for (index, tab) in raw.iter().copied().enumerate().take(limit) {
+        // SAFETY: source or the cache owns every AX element during comparison.
+        let known = result
+            .get(index)
+            .map(|t| t.id)
+            .filter(|id| {
+                cache
+                    .get(id)
+                    .is_some_and(|old| unsafe { CFEqual(old.element.0, tab) })
+            })
+            .or_else(|| {
+                cache
+                    .iter()
+                    .find(|(_, old)| unsafe { CFEqual(old.element.0, tab) })
+                    .map(|(id, _)| *id)
+            });
+        let id = if let Some(id) = known {
+            let cached = cache.get_mut(&id).unwrap();
+            cached.seen = Instant::now();
+            // SAFETY: discovery retains both the current and cached owners.
+            if !unsafe { CFEqual(cached.owner.0, el) } {
+                cached.owner = unsafe { Owned::from_borrowed(el) }?;
+            }
+            id
+        } else {
+            if cache.len() >= 4096 {
+                break;
+            }
+            // SAFETY: source or the cache still owns this borrowed element.
+            let Some(element) = (unsafe { Owned::from_borrowed(tab) }) else {
+                break;
+            };
+            let id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            cache.insert(
+                id,
+                TabElement {
+                    element,
+                    // SAFETY: the owning window stays alive during discovery.
+                    owner: unsafe { Owned::from_borrowed(el) }?,
+                    seen: Instant::now(),
+                },
+            );
+            id
+        };
+        if index >= result.len() {
+            result.push(crate::models::WindowTab {
+                id,
+                ..Default::default()
+            });
+        } else if result[index].id != id {
+            result[index] = crate::models::WindowTab {
+                id,
+                ..Default::default()
+            };
+        }
+    }
+    result.truncate(limit);
+    let start = result
+        .iter()
+        .position(|t| !t.resolved)
+        .unwrap_or(cursor.min(result.len().saturating_sub(1)));
+    let mut next = start;
+    for (index, tab) in raw.into_iter().enumerate().take(result.len()).skip(start) {
+        if ipc_budget::expired() {
+            break;
+        }
+        let title = text_attr(tab, ns_string!("AXTitle"))
+            .chars()
+            .take(256)
+            .collect();
+        if !ipc_budget::healthy() {
+            break;
+        }
+        // AppKit can return AXErrorFailure for an inactive tab's AXValue.
+        // Its identity and name remain valid. This optional query must not
+        // discard them or delay discovery of the next tab.
+        let (selected, _) = ipc_budget::run(ipc_budget::remaining(), || {
+            // SAFETY: source or the cache retains this tab throughout the query.
+            attr(tab, ns_string!("AXValue")).is_some_and(|v| unsafe {
+                (CFGetTypeID(v.0) == CFBooleanGetTypeID() && CFBooleanGetValue(v.0))
+                    || (CFGetTypeID(v.0) == CFNumberGetTypeID() && number(v.0) != 0)
+            })
+        });
+        result[index].title = title;
+        result[index].selected = selected;
+        result[index].resolved = true;
+        next = if index + 1 == limit { 0 } else { index + 1 };
+    }
+    drop(source);
+    Some((result, count, next))
+}
+fn parent_window(el: Ref) -> Option<u32> {
+    let parent = attr(el, ns_string!("AXParent"))?;
+    if text_attr(parent.0, ns_string!("AXRole")) != "AXWindow" {
+        return None;
+    }
+    // SAFETY: the retained parent AX element stays alive on this worker.
+    unsafe { crate::private_api::window_id(parent.0) }
+}
+
 mod service;
 pub fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) {
     service::worker(rx, tx)
@@ -319,8 +479,44 @@ pub fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) 
 fn scan(elements: &mut HashMap<u32, Owned>) -> Snapshot {
     service::snapshot(elements, Duration::from_secs(2))
 }
-// A returned ID waits for close controls after native restore.
-fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u32>, String> {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum DeferredClose {
+    Window(u32),
+    Tab(u64),
+}
+fn tab_pid(target: &TabElement) -> Option<i32> {
+    unsafe extern "C" {
+        fn AXUIElementGetPid(el: Ref, pid: *mut i32) -> i32;
+    }
+    let mut pid = 0;
+    // SAFETY: the worker retains the owner during this native query.
+    (unsafe { AXUIElementGetPid(target.owner.0, &mut pid) } == 0).then_some(pid)
+}
+fn native_tab_window(target: &TabElement, require_selected: bool) -> Option<Owned> {
+    let pid = tab_pid(target)?;
+    // SAFETY: this worker owns the Create result and releases it after use.
+    let root = unsafe { Owned::from_create(AXUIElementCreateApplication(pid)) }?;
+    let focused = attr(root.0, ns_string!("AXFocusedWindow"))?;
+    let group = native_tab_group(focused.0)?;
+    let tabs = attr(group.0, ns_string!("AXTabs"))?;
+    let belongs = array(tabs.0).into_iter().take(128).any(|tab| {
+        // SAFETY: the copied array and target cache retain both AX elements.
+        unsafe { CFEqual(tab, target.element.0) }
+    });
+    // AppKit only exposes a true AXValue on its selected radio tab. A missing
+    // or late value must never authorize closing some other focused window.
+    (belongs && (!require_selected || bool_attr(target.element.0, ns_string!("AXValue"))))
+        .then_some(focused)
+}
+fn focused_tab_window(target: &TabElement) -> Option<Owned> {
+    native_tab_window(target, true)
+}
+// Deferred controls wait for native restore or tab selection before one close press.
+fn execute(
+    command: Command,
+    elements: &HashMap<u32, Owned>,
+    tabs: &HashMap<u64, TabElement>,
+) -> Result<Option<DeferredClose>, String> {
     if crate::runtime::stopping() {
         return Err("Window service is stopping".into());
     }
@@ -339,6 +535,55 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
     let result = match command {
         Command::Launch(bundle, mode) => launch(&bundle, &mode),
         Command::Dock(hidden) => crate::dock::apply(hidden),
+        Command::SelectTab(id) | Command::CloseTab(id) | Command::CloseSelectedTab(id) => {
+            let target = tabs
+                .get(&id)
+                .ok_or("Native tab changed; wait for discovery to refresh")?;
+            if matches!(command, Command::CloseSelectedTab(..)) {
+                if objc2_app_kit::NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    != tab_pid(target)
+                {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                let Some(focused) = focused_tab_window(target) else {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                };
+                if !ipc_budget::healthy() {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                let button = attr(focused.0, ns_string!("AXCloseButton"));
+                if !ipc_budget::healthy() || button.is_none() {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                check(action(button.unwrap().0, ns_string!("AXPress")))
+            } else {
+                let pid = tab_pid(target).ok_or("Cannot identify native tab owner")?;
+                check(activate_pid(pid))?;
+                if bool_attr(target.owner.0, ns_string!("AXMinimized")) {
+                    check(set_bool(target.owner.0, ns_string!("AXMinimized"), false))?;
+                }
+                let same_group = ipc_budget::run(ipc_budget::remaining(), || {
+                    native_tab_window(target, false).is_some()
+                })
+                .0;
+                if !same_group {
+                    set_bool_tracking(target.owner.0, ns_string!("AXMain"), true, false);
+                    check(action(target.owner.0, ns_string!("AXRaise")))
+                        .map_err(|e| format!("{e}: native owner raise"))?;
+                }
+                // Native tab selection is idempotent. Raising the old owner
+                // after this press would switch back to the previous tab.
+                let selected = action(target.element.0, ns_string!("AXPress"));
+                if matches!(command, Command::CloseTab(..)) {
+                    // Poll exact native identity before closing. Never retry
+                    // an actual close press, including after a late AX reply.
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                check(selected).map_err(|e| format!("{e}: native tab selection"))
+            }
+        }
         Command::Activate(id, hide) => {
             let w = window(id)?;
             if hide {
@@ -362,9 +607,11 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 if minimized {
                     check(set_bool(w.0, ns_string!("AXMinimized"), false))?;
                 }
-                // AXMain is optional for some dialogs, while raising is required.
-                // Keep its native failure out of the required-action outcome.
-                set_bool_tracking(w.0, ns_string!("AXMain"), true, false);
+                // Utility panels cannot become main windows. Asking them to do
+                // so can redirect activation to their owner's main window.
+                if text_attr(w.0, ns_string!("AXSubrole")) == "AXStandardWindow" {
+                    set_bool_tracking(w.0, ns_string!("AXMain"), true, false);
+                }
                 check(action(w.0, ns_string!("AXRaise")))?;
                 Ok(())
             }
@@ -397,13 +644,13 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 // Restore animation can temporarily reject read-only AX queries.
                 // The worker bounds this wait and never repeats AXPress.
                 if matches!(command, Command::CloseRestored(_)) {
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
                 return Err("Cannot read window close controls".into());
             }
             if unavailable {
                 if matches!(command, Command::CloseRestored(_)) {
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
                 let minimized = bool_attr(w.0, ns_string!("AXMinimized"));
                 if !crate::ipc_budget::healthy() {
@@ -411,7 +658,7 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 }
                 if minimized {
                     check(set_bool(w.0, ns_string!("AXMinimized"), false))?;
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
             }
             let button = button.ok_or("Window has no accessible close button")?;
@@ -462,6 +709,11 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
 }
 fn activate_pid(pid: i32) -> bool {
     NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|app| {
+        // An already active app needs only its window or native tab raised.
+        // macOS can reject a redundant app-activation request during tab changes.
+        if app.isActive() {
+            return true;
+        }
         let source = NSRunningApplication::currentApplication();
         let options = NSApplicationActivationOptions::empty();
         // Only an active source can yield focus. Taskbar panels normally keep
@@ -902,6 +1154,14 @@ pub(crate) fn check_fixture_activation(pid: i32) -> bool {
     );
     app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
     service::check_fixture_activation(pid)
+}
+
+pub(crate) fn check_fixture_related(pid: i32) -> bool {
+    let app = objc2_app_kit::NSApplication::sharedApplication(
+        objc2::MainThreadMarker::new().expect("main thread"),
+    );
+    app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    service::check_fixture_related(pid)
 }
 
 /// Close only a minimized window from the named disposable QA application.

@@ -32,17 +32,18 @@ fn main() {
     }
     if args
         .get(1)
-        .is_some_and(|s| s == "--check-fixture-activation")
+        .is_some_and(|s| s == "--check-fixture-activation" || s == "--check-fixture-related")
     {
         let Some(pid) = args.get(2).and_then(|value| value.parse().ok()) else {
             eprintln!("Pass a disposable native fixture PID.");
             std::process::exit(2);
         };
-        std::process::exit(if macos::check_fixture_activation(pid) {
-            0
+        let passed = if args[1] == "--check-fixture-related" {
+            macos::check_fixture_related(pid)
         } else {
-            1
-        });
+            macos::check_fixture_activation(pid)
+        };
+        std::process::exit(if passed { 0 } else { 1 });
     }
     if args.get(1).is_some_and(|s| s == "--benchmark-hover") {
         let Some(fixture) = args.get(3).and_then(|s| s.parse().ok()) else {

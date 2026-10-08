@@ -186,22 +186,24 @@ unsafe extern "C-unwind" fn callback(
                 state
                     .try_borrow()
                     .ok()
-                    .and_then(|s| target_at(&s, point, frontmost))
+                    .and_then(|s| action_at(&s, point, frontmost))
             } else {
                 None
             };
-            match context
-                .keys
-                .borrow_mut()
-                .decision(kind, W_KEY, flags, repeat, target)
-            {
+            match context.keys.borrow_mut().decision(
+                kind,
+                W_KEY,
+                flags,
+                repeat,
+                target.as_ref().map(|_| 1),
+            ) {
                 Decision::Pass => event.as_ptr(),
                 Decision::Consume => std::ptr::null_mut(),
-                Decision::Close(id) => {
+                Decision::Close(_) => {
                     // Consume even if the queue rejects the command: falling
                     // through would close the focused app's unrelated window.
-                    if let Ok(s) = state.try_borrow() {
-                        s.command(Command::Close(id));
+                    if let Some(action) = target {
+                        dispatch(&state, action);
                     }
                     std::ptr::null_mut()
                 }
@@ -211,6 +213,34 @@ unsafe extern "C-unwind" fn callback(
     .unwrap_or(event.as_ptr())
 }
 
+pub(super) fn action_at(s: &State, point: NSPoint, frontmost: isize) -> Option<Action> {
+    if let Some(id) = target_at(s, point, frontmost) {
+        return Some(Action::Close(id));
+    }
+    s.bars
+        .iter()
+        .filter(|b| b.panel.isVisible() && b.panel.windowNumber() == frontmost)
+        .find_map(|bar| {
+            let local = bar.panel.convertPointFromScreen(point);
+            let hit = bar
+                .root
+                .hitTest(bar.root.convertPoint_fromView(local, None))?;
+            let button = hit.downcast_ref::<ActionButton>()?;
+            if let Action::Tab(id, index) = button.ivars().action
+                && button.isEnabled()
+                && s.snapshot
+                    .windows
+                    .iter()
+                    .find(|w| w.id == id)
+                    .is_some_and(|w| w.tabs.iter().any(|t| t.id == index))
+            {
+                Some(Action::CloseTab(id, index))
+            } else {
+                None
+            }
+        })
+}
+
 pub(super) fn tile_at(bar: &Bar, point: NSPoint) -> Option<u32> {
     let local = bar.panel.convertPointFromScreen(point);
     let hit = bar
@@ -218,7 +248,7 @@ pub(super) fn tile_at(bar: &Bar, point: NSPoint) -> Option<u32> {
         .hitTest(bar.root.convertPoint_fromView(local, None))?;
     let button = hit.downcast_ref::<ActionButton>()?;
     match button.ivars().action {
-        Action::Window(id) if button.isEnabled() => Some(id),
+        Action::Window(id) | Action::Bubble(id) if button.isEnabled() => Some(id),
         _ => None,
     }
 }

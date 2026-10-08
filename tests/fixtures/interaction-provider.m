@@ -48,7 +48,7 @@
 - (void)applicationDidResignActive:(NSNotification *)note {[self recordFocus:@"inactive" window:self.keyWindow];}
 - (void)report {
     NSMutableArray *windows=[NSMutableArray array];
-    for(NSWindow *w in self.fixtures)[windows addObject:@{@"id":@(w.windowNumber),@"minimized":@(w.miniaturized),@"key":@(w.keyWindow),@"visible":@(w.visible),@"title":w.title}];
+    for(NSWindow *w in self.fixtures)[windows addObject:@{@"id":@(w.windowNumber),@"minimized":@(w.miniaturized),@"key":@(w.keyWindow),@"visible":@(w.visible),@"title":w.title,@"parent":@(w.parentWindow.windowNumber),@"tabs":@(w.tabbedWindows.count)}];
     NSDictionary *result=@{@"at":@([NSDate date].timeIntervalSince1970),@"pid":@(getpid()),@"created":@(self.created),@"closed":@(self.closed),@"windows":windows,@"active":@(self.active),@"focus_events":self.focusEvents};
     NSData *data=[NSJSONSerialization dataWithJSONObject:result options:0 error:nil];fwrite(data.bytes,1,data.length,stdout);putchar('\n');fflush(stdout);
 }
@@ -61,9 +61,22 @@
         NSDictionary *command=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];NSString *op=command[@"op"];NSUInteger count=MIN([command[@"count"] unsignedIntegerValue],64);
         if([op isEqual:@"open"]){[self createWindows:count];}
         else if([op isEqual:@"close"]){for(NSUInteger i=0;i<count&&self.fixtures.count;i++){NSWindow *window=self.fixtures.lastObject;[window close];}}
-        else if([op isEqual:@"minimize"]){for(MinimizedFixtureWindow *w in self.fixtures.copy){if(!count)break;if(!w.miniaturized){w.closeRequiresRestore=[command[@"close_requires_restore"] boolValue];[w miniaturize:nil];count--;}}}
+        else if([op isEqual:@"minimize"]){for(MinimizedFixtureWindow *w in self.fixtures.copy){if(!count)break;if(![w isKindOfClass:MinimizedFixtureWindow.class])continue;if(!w.miniaturized){w.closeRequiresRestore=[command[@"close_requires_restore"] boolValue];[w miniaturize:nil];count--;}}}
         else if([op isEqual:@"hide"]){[self hide:nil];}
-        else if([op isEqual:@"delay"]){for(MinimizedFixtureWindow *w in self.fixtures){if(!count)break;w.nextRaiseDelayMs=MIN([command[@"milliseconds"] unsignedIntegerValue],500);count--;}[self report];}
+        else if([op isEqual:@"child"]){
+            NSWindow *parent=self.fixtures.firstObject;
+            NSPanel *child=[[NSPanel alloc] initWithContentRect:NSMakeRect(parent.frame.origin.x+30,parent.frame.origin.y+30,220,120) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskUtilityWindow backing:NSBackingStoreBuffered defer:NO];
+            child.title=@"Taskbar QA Computer Use";child.releasedWhenClosed=NO;child.delegate=self;child.hidesOnDeactivate=YES;
+            [parent addChildWindow:child ordered:NSWindowAbove];[self.fixtures addObject:child];[child orderFront:nil];[self report];
+        }
+        else if([op isEqual:@"tabs"]){
+            NSArray *main=[self.fixtures filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSWindow *w,NSDictionary *bindings){return [w isKindOfClass:MinimizedFixtureWindow.class];}]];
+            if(main.count>=2){NSWindow *first=main[0],*second=main[1];
+                first.tabbingMode=NSWindowTabbingModePreferred;second.tabbingMode=NSWindowTabbingModePreferred;
+                [first addTabbedWindow:second ordered:NSWindowAbove];[first makeKeyAndOrderFront:nil];}
+            [self report];
+        }
+        else if([op isEqual:@"delay"]){for(MinimizedFixtureWindow *w in self.fixtures){if(!count)break;if(![w isKindOfClass:MinimizedFixtureWindow.class])continue;w.nextRaiseDelayMs=MIN([command[@"milliseconds"] unsignedIntegerValue],500);count--;}[self report];}
         else if([op isEqual:@"report"]){[self report];}
         else if([op isEqual:@"quit"]){for(NSWindow *w in self.fixtures.copy)[w close];[self report];[self terminate:nil];}
     }
