@@ -39,15 +39,6 @@ impl Browser {
             Self::Canary => "Chrome Canary",
         }
     }
-    #[cfg(test)]
-    fn title(self) -> &'static str {
-        match self {
-            Self::Stable => "Google Chrome",
-            Self::Beta => "Google Chrome Beta",
-            Self::Dev => "Google Chrome Dev",
-            Self::Canary => "Google Chrome Canary",
-        }
-    }
     fn separator(self) -> &'static str {
         match self {
             Self::Stable => " - Google Chrome - ",
@@ -328,12 +319,11 @@ mod tests {
             let mut c = catalog(serde_json::json!({"Default":{"name":"Work"}}));
             c.browser = browser;
             assert!(
-                c.profile_for_title(&format!("Page - {} - Work", browser.title()))
+                c.profile_for_title(&format!("Page - Google {directory} - Work"))
                     .is_some()
             );
         }
         assert_eq!(Browser::for_bundle("org.mozilla.firefox"), None);
-        assert_eq!(AVATAR_SIDE * AVATAR_SIDE * 4, 4096);
     }
     #[test]
     fn picture_paths_cannot_escape_through_a_symlink() {

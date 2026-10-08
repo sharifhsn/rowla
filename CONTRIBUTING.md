@@ -70,29 +70,8 @@ CI does not grant Accessibility or Screen Recording access. It does not prove co
 
 ## Code structure
 
-| Path | Responsibility |
-| --- | --- |
-| `src/ui.rs`, `src/ui/` | AppKit controls, previews, menus, and native UI checks |
-| `src/platform.rs`, `src/platform/` | Accessibility discovery, observers, and window controls |
-| `src/capture.rs` | Serial ScreenCaptureKit stream and snapshot capture |
-| `src/native_features.rs` | Runtime checks for newer optional APIs and compatibility probe |
-| `src/chrome_profiles.rs`, `src/chrome_profiles/`, `src/ui/chrome_profiles.rs` | Bounded local Chrome metadata, background photo decode, and shared profile badges |
-| `src/system_actions.rs`, `shortcuts/` | Exact local action URLs and signed shortcut import files |
-| `src/config.rs`, `src/window_order.rs` | Preferences and Sort order |
-| `src/runtime.rs`, `src/scheduler.rs`, `src/ipc_budget.rs` | Work queues, deadlines, and request limits |
-| `src/models.rs` | Owned window data |
-| `src/private_api.rs` | Optional private window and Spaces functions |
-| `src/updater.rs`, `src/updater/` | Sparkle integration and isolated updater checks |
-| `scripts/`, `tests/` | Build, installation, release tools, and fixtures |
-
-Keep AppKit controls on the main thread. Keep Accessibility calls and observers on the window worker.
-Keep ScreenCaptureKit work on its serial worker. Explain unsafe ownership and thread assumptions in code comments.
-
-Do not put native Accessibility pointers or capture buffers in public models.
-Keep caches and work queues bounded. Count failed capture requests against rate limits.
-
-The internal executable is `taskbar-rs`. The bundle identifier is `io.sharif.taskbarrust`.
-Preferences use `~/Library/Application Support/Taskbar Rust/`. Preserve these names for upgrade compatibility.
+Use the [project guide](AGENTS.md#code) for the complete code map and native invariants.
+The guide also maps the user docs, API research, QA results, release procedure, and repository policies.
 
 ## Native checks
 

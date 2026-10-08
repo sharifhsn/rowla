@@ -1484,9 +1484,12 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
         .find(|w| w.tabs.len() == 2 && w.tabs.iter().all(|t| t.resolved))
     {
         let token = w.tabs[1].id;
+        let remaining_title = w.tabs[0].title.clone();
+        let closed_title = w.tabs[1].title.clone();
         let queued = tx.try_send(Command::CloseTab(token)).is_ok();
         let wait = Instant::now();
-        while wait.elapsed() < Duration::from_secs(1) {
+        // Close can defer for two seconds. Allow one metadata refresh after it.
+        while wait.elapsed() < Duration::from_secs(3) {
             pump(&mut snapshot);
             if let Some(error) = &snapshot.control_error
                 && !error.contains("Native tab changed")
@@ -1495,18 +1498,21 @@ pub(super) fn check_fixture_related(pid: i32) -> bool {
             {
                 errors.push(error.clone());
             }
+            closed_only_tab = queued
+                && snapshot
+                    .windows
+                    .iter()
+                    .filter(fixture)
+                    .any(|w| !w.subordinate && w.title == remaining_title)
+                && snapshot
+                    .windows
+                    .iter()
+                    .filter(fixture)
+                    .all(|w| w.title != closed_title && w.tab_count < 2);
+            if closed_only_tab {
+                break;
+            }
         }
-        closed_only_tab = queued
-            && snapshot
-                .windows
-                .iter()
-                .filter(fixture)
-                .any(|w| !w.subordinate)
-            && snapshot
-                .windows
-                .iter()
-                .filter(fixture)
-                .all(|w| w.tab_count < 2);
     }
     let _ = tx.send(Command::Stop);
     drop(tx);

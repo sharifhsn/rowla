@@ -393,16 +393,9 @@ fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
         color,
         picture_file: None,
         pixels: picture.then(|| {
-            let mut bytes = vec![0u8; AVATAR_SIDE * AVATAR_SIDE * 4];
-            for (i, p) in bytes.chunks_exact_mut(4).enumerate() {
-                let x = (i % AVATAR_SIDE) as i32 - 16;
-                let y = (i / AVATAR_SIDE) as i32 - 16;
-                let head = x * x + (y - 5) * (y - 5) < 25;
-                let shoulders = x * x + (y + 12) * (y + 12) < 100;
-                let c = if head || shoulders { 0xfff2d3b1 } else { color };
-                p.copy_from_slice(&[c as u8, (c >> 8) as u8, (c >> 16) as u8, 255]);
-            }
-            bytes.into()
+            [color as u8, (color >> 8) as u8, (color >> 16) as u8, 255]
+                .repeat(AVATAR_SIDE * AVATAR_SIDE)
+                .into()
         }),
     };
     {

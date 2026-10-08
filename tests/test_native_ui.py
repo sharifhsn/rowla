@@ -24,17 +24,17 @@ class NativeUiReportTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10,
             ).returncode
 
-    def test_failed_report_is_not_a_pass(self):
-        self.assertEqual(self.check_report({"completed": True, "passed": False}), 1)
-
-    def test_incomplete_report_is_not_a_pass(self):
-        self.assertEqual(self.check_report({"completed": False, "passed": True}), 1)
-
-    def test_successful_report_and_exit_code_pass(self):
-        self.assertEqual(self.check_report({"completed": True, "passed": True}), 0)
-
-    def test_child_failure_remains_a_failure(self):
-        self.assertEqual(self.check_report({"completed": True, "passed": True}, 1), 1)
+    def test_report_and_child_exit_must_both_succeed(self):
+        for completed, passed, exit_code, expected in [
+            (True, False, 0, 1),
+            (False, True, 0, 1),
+            (True, True, 0, 0),
+            (True, True, 1, 1),
+        ]:
+            with self.subTest(completed=completed, passed=passed, exit_code=exit_code):
+                self.assertEqual(
+                    self.check_report({"completed": completed, "passed": passed}, exit_code), expected
+                )
 
 
 if __name__ == "__main__":
