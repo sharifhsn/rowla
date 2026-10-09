@@ -32,6 +32,10 @@ The UI check passed 624 hit tests and 606 feedback checks, plus overflow, narrow
 Ordinary, hidden, and 80 ms delayed activation passed. Other activation cases lost foreground focus and remain unverified in those runs.
 Computer-use restrictions blocked direct ChatGPT and Ghostty checks. The fixture covers their native window and AppKit tab mechanisms.
 
+October 9, 2026: Incomplete Accessibility scans preserve cached window groups.
+A 21-scan regression keeps tile and bubble positions fixed and reuses their controls.
+An absent explicit parent cannot redirect its child to another window.
+
 Two cycles each opened and closed 32 fixture windows. Across 56 samples, RSS started at 122.7 MiB, peaked at 133.0 MiB, and ended at 109.3 MiB.
 This finite check does not establish long-term memory behavior. Installation kept the signature identity and matched the tested executable.
 

@@ -38,19 +38,15 @@ pub(crate) fn groups<'a>(windows: &[&'a Window]) -> Vec<Group<'a>> {
     }
     let mut parents = HashMap::new();
     for w in windows {
-        if w.stale {
-            continue;
-        }
+        // Incomplete AX scans retain these owned records. Keep their known
+        // relationships until a complete scan removes or updates them.
         let candidates: Vec<_> = apps[&w.pid]
             .iter()
             .copied()
-            .filter(|p| p.id != w.id && !p.subordinate && !p.tabbed_hidden && !p.stale)
+            .filter(|p| p.id != w.id && !p.subordinate && !p.tabbed_hidden)
             .collect();
-        let explicit = w
-            .parent_id
-            .and_then(|id| candidates.iter().find(|p| p.id == id).copied());
-        let parent = if explicit.is_some() {
-            explicit
+        let parent = if let Some(id) = w.parent_id {
+            candidates.iter().find(|p| p.id == id).copied()
         } else if w.subordinate {
             // A utility panel often has AXApplication as its parent. Attach it
             // only to a sole main window or one unambiguous containing window.
@@ -161,6 +157,19 @@ mod tests {
             ..window(2)
         };
         assert_eq!(ids(&[tab.clone(), main.clone()]), [(1, vec![2])]);
+        assert_eq!(
+            ids(&[
+                Window {
+                    stale: true,
+                    ..tab.clone()
+                },
+                Window {
+                    stale: true,
+                    ..main.clone()
+                },
+            ]),
+            [(1, vec![2])]
+        );
         assert_eq!(ids(&[window(1), tab.clone()]), [(1, vec![]), (2, vec![])]);
         assert_eq!(
             ids(&[
@@ -195,7 +204,39 @@ mod tests {
         );
     }
     #[test]
-    fn owners_must_be_live_and_from_the_same_process() {
+    fn incomplete_scans_keep_computer_use_in_its_parent_tile() {
+        let initial = vec![
+            Window {
+                pid: 2,
+                ..window(10)
+            },
+            window(1),
+            Window {
+                pid: 3,
+                ..window(20)
+            },
+            Window {
+                subordinate: true,
+                parent_id: Some(1),
+                width: 200.0,
+                height: 100.0,
+                ..window(2)
+            },
+        ];
+        let expected = [(10, vec![]), (1, vec![2]), (20, vec![])];
+        for parent_id in [Some(1), None] {
+            for cycle in 0..21 {
+                let mut windows = initial.clone();
+                windows[3].parent_id = parent_id;
+                for w in windows.iter_mut().filter(|w| w.pid == 1) {
+                    w.stale = cycle % 2 == 1;
+                }
+                assert_eq!(ids(&windows), expected, "scan {cycle}");
+            }
+        }
+    }
+    #[test]
+    fn owners_must_be_present_and_from_the_same_process() {
         let child = Window {
             subordinate: true,
             parent_id: Some(1),
@@ -211,15 +252,6 @@ mod tests {
             ]),
             [(1, vec![]), (2, vec![])]
         );
-        assert_eq!(
-            ids(&[
-                Window {
-                    stale: true,
-                    ..window(1)
-                },
-                child
-            ]),
-            [(1, vec![]), (2, vec![])]
-        );
+        assert_eq!(ids(&[window(3), child]), [(3, vec![]), (2, vec![])]);
     }
 }

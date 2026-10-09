@@ -530,6 +530,7 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
             s.snapshot.clone(),
             s.order.clone(),
             s.pending_focus,
+            s.known_spaces.clone(),
         )
     };
     {
@@ -565,6 +566,7 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
             })
             .collect();
         s.order = (1..=9).collect();
+        s.known_spaces = (1..=9).map(|id| (id, true)).collect();
     }
     render(state);
     let (parent, bubble, overflow, panel, root, created) = {
@@ -620,6 +622,31 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
         autoreleasepool(|_| render(state));
     }
     let reused = state.borrow().performance.buttons_created == created;
+    let parent_frame = parent.frame();
+    let bubble_frame = bubble.frame();
+    let mut scan_stability = true;
+    for cycle in 0..21 {
+        let mut next = state.borrow().snapshot.clone();
+        for window in &mut next.windows {
+            window.stale = cycle % 2 == 1;
+        }
+        apply_snapshot(&mut state.borrow_mut(), next);
+        render(state);
+        let s = state.borrow();
+        let buttons = &s.bars[0].buttons;
+        scan_stability &= buttons
+            .keys()
+            .filter(|a| matches!(a, Action::Window(_)))
+            .count()
+            == 1
+            && buttons
+                .get(&Action::Window(1))
+                .is_some_and(|b| std::ptr::eq(&**b, &*parent) && b.frame() == parent_frame)
+            && buttons
+                .get(&Action::Bubble(2))
+                .is_some_and(|b| std::ptr::eq(&**b, &*bubble) && b.frame() == bubble_frame)
+            && s.performance.buttons_created == created;
+    }
     let screenshot = render_fixture_view(&root, "related-bubbles.png");
     {
         let mut s = state.borrow_mut();
@@ -698,11 +725,17 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
     let native_screenshot = render_fixture_view(&root, "related-bubbles.png");
     {
         let mut s = state.borrow_mut();
-        (s.config, s.snapshot, s.order, s.pending_focus) = saved;
+        (
+            s.config,
+            s.snapshot,
+            s.order,
+            s.pending_focus,
+            s.known_spaces,
+        ) = saved;
         s.pending_tab = None;
     }
     render(state);
-    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&narrow&&screenshot&&tab_hit&&tab_close&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"instant_feedback":instant,"controls_reused":reused,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
+    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&scan_stability&&narrow&&screenshot&&tab_hit&&tab_close&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"instant_feedback":instant,"controls_reused":reused,"incomplete_scan_stability":scan_stability,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
 }
 
 fn check_system_features(state: &Shared) -> serde_json::Value {
