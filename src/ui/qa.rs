@@ -81,6 +81,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
             s.snapshot.windows = (1..=windows)
                 .map(|id| Window {
                     id: id as u32,
+                    pid: 1000 + id as i32,
                     bundle: "com.apple.TextEdit".into(),
                     app: "Taskbar QA".into(),
                     title: format!(
@@ -213,7 +214,9 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let hover_close_ignores_controls = {
         let s = state.borrow();
         let bar = &s.bars[0];
-        bar.buttons
+        bar.panel.orderFrontRegardless();
+        let ignored = bar
+            .buttons
             .values()
             .filter(|b| !matches!(b.ivars().action, Action::Window(_)))
             .all(|b| {
@@ -221,8 +224,18 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
                     NSPoint::new(b.bounds().size.width / 2.0, b.bounds().size.height / 2.0),
                     None,
                 );
-                hover_close::tile_at(bar, bar.panel.convertPointToScreen(p)).is_none()
-            })
+                [13, 12].into_iter().all(|key| {
+                    hover_close::action_at(
+                        &s,
+                        bar.panel.convertPointToScreen(p),
+                        bar.panel.windowNumber(),
+                        key,
+                    )
+                    .is_none()
+                })
+            });
+        bar.panel.orderOut(None);
+        ignored
     };
     let pin_checks = check_pins(state);
     let start_search = check_start_search(state);
@@ -707,7 +720,23 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
         &state.borrow(),
         panel.convertPointToScreen(point),
         panel.windowNumber(),
+        13,
     ) == Some(Action::CloseTab(1, 102));
+    let hover_quit = {
+        let s = state.borrow();
+        [
+            &tab,
+            &s.bars[0].buttons[&Action::Window(1)],
+            &s.bars[0].buttons[&Action::Bubble(2)],
+        ]
+        .into_iter()
+        .all(|button| {
+            let p = button.convertPoint_toView(NSPoint::new(5.0, 5.0), None);
+            let point = panel.convertPointToScreen(p);
+            hover_close::action_at(&s, point, panel.windowNumber(), 12) == Some(Action::QuitApp(1))
+                && hover_close::action_at(&s, point, -1, 12).is_none()
+        })
+    };
     panel.orderOut(None);
     tab.mouseDown(&mouse_event(&panel, NSEventType::LeftMouseDown, point));
     tab.mouseUp(&mouse_event(&panel, NSEventType::LeftMouseUp, point));
@@ -735,7 +764,7 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
         s.pending_tab = None;
     }
     render(state);
-    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&scan_stability&&narrow&&screenshot&&tab_hit&&tab_close&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"instant_feedback":instant,"controls_reused":reused,"incomplete_scan_stability":scan_stability,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
+    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&scan_stability&&narrow&&screenshot&&tab_hit&&tab_close&&hover_quit&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"hover_quit_application":hover_quit,"instant_feedback":instant,"controls_reused":reused,"incomplete_scan_stability":scan_stability,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
 }
 
 fn check_system_features(state: &Shared) -> serde_json::Value {
@@ -1203,7 +1232,9 @@ fn check_presentation_updates(state: &Shared) -> serde_json::Value {
             };
             let correct = button.title().to_string() == expected
                 && tooltip.to_string()
-                    == format!("QA — App — {title}\n⌘W while hovering closes this window")
+                    == format!(
+                        "QA — App — {title}\n⌘W closes this window. ⌘Q quits its application."
+                    )
                 && button.imagePosition()
                     == if show_titles {
                         NSCellImagePosition::ImageLeft
@@ -1912,6 +1943,16 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         )
     };
     let cached_minimized_close = command_w_closes(cached_close_target, 63);
+    let cached_minimized_quit = {
+        let s = state.borrow();
+        let frame = s.preview.as_ref().unwrap().panel.frame();
+        hover_close::action_at(
+            &s,
+            NSPoint::new(frame.origin.x + 5.0, frame.origin.y + 5.0),
+            panel_number,
+            12,
+        ) == Some(Action::QuitApp(1063))
+    };
     hide_preview(state);
     state.borrow_mut().preview_cache.retain(|id| id != 63);
     begin_hover(state, 63, number, anchor);
@@ -1933,6 +1974,21 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         hover_close::tile_at(bar, bar.panel.convertPointToScreen(local))
     };
     let cold_minimized_close = command_w_closes(cold_close_target, 63);
+    let cold_minimized_quit = {
+        let s = state.borrow();
+        let bar = &s.bars[0];
+        let button = &bar.buttons[&Action::Window(63)];
+        bar.panel.orderFrontRegardless();
+        let p = button.convertPoint_toView(NSPoint::new(5.0, 5.0), None);
+        let target = hover_close::action_at(
+            &s,
+            bar.panel.convertPointToScreen(p),
+            bar.panel.windowNumber(),
+            12,
+        );
+        bar.panel.orderOut(None);
+        target == Some(Action::QuitApp(1063))
+    };
     hide_preview(state);
     let (retained_after_restore, closed_released) = {
         let mut s = state.borrow_mut();
@@ -1960,11 +2016,13 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         && cached_switch
         && cached_minimized_close
         && cold_minimized_close
+        && cached_minimized_quit
+        && cold_minimized_quit
         && cold_minimized_skips_capture
         && retained_after_restore
         && closed_released
         && retained_bytes <= preview_cache::MAX_BYTES;
-    serde_json::json!({"passed":passed,"cached_image_age_seconds":3600,"cached_displayed":cached_displayed,"preview_metadata_updates_and_reuses":preview_metadata,"minimized_skips_capture":no_capture,"cold_minimized_skips_capture":cold_minimized_skips_capture,"cached_minimized_command_w":cached_minimized_close,"cold_minimized_command_w":cold_minimized_close,"retained_after_restore":retained_after_restore,"closed_releases_bitmap":closed_released,"cache_bytes":retained_bytes,"popup_meets_task_strip":gapless_position,"cached_switch_synchronous":cached_switch})
+    serde_json::json!({"passed":passed,"cached_image_age_seconds":3600,"cached_displayed":cached_displayed,"preview_metadata_updates_and_reuses":preview_metadata,"minimized_skips_capture":no_capture,"cold_minimized_skips_capture":cold_minimized_skips_capture,"cached_minimized_command_w":cached_minimized_close,"cold_minimized_command_w":cold_minimized_close,"cached_minimized_command_q":cached_minimized_quit,"cold_minimized_command_q":cold_minimized_quit,"retained_after_restore":retained_after_restore,"closed_releases_bitmap":closed_released,"cache_bytes":retained_bytes,"popup_meets_task_strip":gapless_position,"cached_switch_synchronous":cached_switch})
 }
 
 fn command_w_closes(target: Option<u32>, expected: u32) -> bool {

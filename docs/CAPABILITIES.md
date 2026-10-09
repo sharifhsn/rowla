@@ -16,6 +16,7 @@ Accessibility access supplies window discovery and controls. An application must
 | Close a related window or tab | Hover **⌘W**, middle-click, or bubble context menu | Targets that specific native control. A renamed tab retains its identity. The worker limits tab metadata to 128 controls per group and 4096 retained controls overall |
 | Activate and restore | Click a window button | Activates that specific window and restores it if minimized. Active feedback appears on the button |
 | Close a window | Hover **⌘W**, thumbnail **×**, or context menu | Closes the selected window, including minimized windows. Save dialogs remain under the application's control |
+| Quit an application | Hover **⌘Q** over a window button, bubble, or thumbnail | Quits that window's application. Save dialogs remain under the application's control |
 | Middle-click close | Preferences → Taskbar | Enabled by default. The option controls middle-click on a window button |
 | Minimize and fullscreen | Right-click a window button | Provides **Minimize / Restore** and **Toggle Full Screen**. Support depends on the application |
 | Application controls | Right-click a window button | Provides **Hide Application** and the separate **Quit Application** action |

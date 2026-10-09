@@ -267,7 +267,7 @@ pub(super) fn apply(state: &Shared, button: &ActionButton, window: &Window) {
             " — ",
             &window.title,
             &profile,
-            "\n⌘W while hovering closes this window",
+            "\n⌘W closes this window. ⌘Q quits its application.",
         ],
     );
 }

@@ -40,6 +40,7 @@ Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBI
 - Click a bubble to show its window or select its tab. Use the count bubble to open the full list.
 - Press **⌘W** over a bubble to close its specific window or tab.
 - Press **⌘W** with the pointer over a window button or thumbnail to close that window. This also works with minimized windows.
+- Press **⌘Q** over a window button, bubble, or thumbnail to quit its application.
 - Select the small **×** on a thumbnail to close its window.
 - Use the **Sort** button immediately after Start to apply your preferred application order.
 - Use Preferences → Sort to change the application order. Recent main windows come before popups in each application.

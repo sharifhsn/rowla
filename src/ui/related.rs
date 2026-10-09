@@ -69,7 +69,7 @@ pub(super) fn render_bubbles(
                     Action::Bubble(w.id),
                     abbreviation(&w.title),
                     format!(
-                        "{} — {}\nClick to show this window. ⌘W while hovering closes it.",
+                        "{} — {}\nClick to show this window. ⌘W closes it. ⌘Q quits its application.",
                         w.app, w.title
                     ),
                     focused == Some(w.id),
@@ -78,7 +78,7 @@ pub(super) fn render_bubbles(
                     Action::Tab(group.main.id, t.id),
                     (i + 1).to_string(),
                     format!(
-                        "{} — Tab {}: {}\nClick to select this tab. ⌘W while hovering closes it.",
+                        "{} — Tab {}: {}\nClick to select this tab. ⌘W closes it. ⌘Q quits its application.",
                         group.main.app,
                         i + 1,
                         t.title
