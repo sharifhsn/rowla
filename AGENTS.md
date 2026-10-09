@@ -34,6 +34,8 @@ Read only the affected module and its checks from this map. Keep the change focu
 ## Checks and knowledge
 
 [CONTRIBUTING.md](CONTRIBUTING.md#checks) owns the check commands. Use two Cargo jobs, locked dependencies, and the pinned toolchain.
+`scripts/check.sh` runs the local and CI checks. Use `--core` for portable Rust checks.
+
 Build before the Python tests for the updater probe. Linux supports portable library checks, not native behavior.
 The default checks skip explicit microbenchmarks and the local-certificate test.
 

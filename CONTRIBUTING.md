@@ -42,15 +42,11 @@ The public beta download supports Apple Silicon only.
 ## Checks
 
 ```sh
-cargo fmt --all --check
-cargo test --locked --all-targets -j 2
-cargo clippy --locked --all-targets -j 2 -- -D warnings
-for script in scripts/*.sh; do bash -n "$script"; done
-scripts/build.sh
-python3 scripts/check-compatibility.py dist/Rowla.app
-dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
-TASKBAR_TEST_BUNDLE="$PWD/dist/Rowla.app" python3 -m unittest discover -s tests -v
+scripts/check.sh
 ```
+
+This command does the format, Rust, Clippy, shell, build, compatibility, native UI, and Python checks.
+It builds a test bundle. It does not replace the installed app.
 
 Rust tests include opt-in sort and native dictionary microbenchmarks. The default checks skip these microbenchmarks.
 Python tests use temporary app bundles and a local HTTP server. They do not install Rowla or request screen permissions.
@@ -59,8 +55,7 @@ The stable-certificate test needs a certificate identity through `TASKBAR_TEST_L
 Linux supports the portable library checks:
 
 ```sh
-cargo test --locked --lib -j 2
-cargo clippy --locked --lib -j 2 -- -D warnings
+scripts/check.sh --core
 ```
 
 For documentation-only changes, examine local links, anchors, YAML forms, and the updated GitHub page. No native build is necessary.

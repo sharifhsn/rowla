@@ -764,8 +764,13 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
         s.dirty = true;
     }
     // Diagnostics and pending focus still update on an unchanged window list.
-    // Disabled previews must release any image or hover from the prior setting.
-    if !windows_changed && !permissions_changed && s.config.thumbnails && snapshot.screen_allowed {
+    // Disabled previews must release their image, hover, cache, and capture first.
+    let preview_cleanup = (!s.config.thumbnails || !snapshot.screen_allowed)
+        && (s.hover.is_some()
+            || s.preview_id.is_some()
+            || s.capture_busy
+            || s.preview_cache.len() != 0);
+    if !windows_changed && !permissions_changed && !preview_cleanup {
         s.snapshot = snapshot;
         return false;
     }

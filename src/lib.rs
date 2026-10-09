@@ -8,6 +8,10 @@ pub mod models;
 mod related_windows;
 mod window_order;
 
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "ui/preview_lifecycle.rs"]
+mod preview_lifecycle;
+
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os = "macos")]

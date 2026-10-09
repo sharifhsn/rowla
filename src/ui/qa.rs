@@ -917,7 +917,11 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
     s.preview_id = None;
     s.preview_cache.clear();
     let mut cases = Vec::new();
-    for windows in [8, 32, 64, 512] {
+    for (windows, thumbnails) in [8, 32, 64, 512]
+        .into_iter()
+        .flat_map(|windows| [true, false].map(|thumbnails| (windows, thumbnails)))
+    {
+        s.config.thumbnails = thumbnails;
         s.order.clear();
         s.known_spaces.clear();
         s.activity = crate::window_order::Activity::default();
@@ -969,8 +973,9 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
             changed_timing.record(start.elapsed());
             correct &= !permission_change && s.dirty && s.order == order;
         }
-        cases.push(serde_json::json!({"windows":windows,"passed":correct,"unchanged_snapshot":timing.json(),"changed_snapshot":changed_timing.json()}));
+        cases.push(serde_json::json!({"windows":windows,"thumbnails":thumbnails,"passed":correct,"unchanged_snapshot":timing.json(),"changed_snapshot":changed_timing.json()}));
     }
+    s.config.thumbnails = true;
     let mut next = s.snapshot.clone();
     next.windows.truncate(3);
     apply_snapshot(&mut s, next);
@@ -1062,6 +1067,11 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
     let next = s.snapshot.clone();
     apply_snapshot(&mut s, next);
     let disabled_cleanup = released(&s);
+    s.preview_cache
+        .insert(2, image.clone(), bytes, Instant::now());
+    let next = s.snapshot.clone();
+    apply_snapshot(&mut s, next);
+    let cache_cleanup = released(&s);
     s.config.thumbnails = true;
     seed(&mut s);
     let mut next = s.snapshot.clone();
@@ -1076,8 +1086,9 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && expired_feedback
         && permission_cleanup
         && disabled_cleanup
+        && cache_cleanup
         && closed_cleanup;
-    serde_json::json!({"passed":passed,"cases":cases,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"closed_cleanup":closed_cleanup})
+    serde_json::json!({"passed":passed,"cases":cases,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"cache_cleanup":cache_cleanup,"closed_cleanup":closed_cleanup})
 }
 
 fn check_presentation_updates(state: &Shared) -> serde_json::Value {
