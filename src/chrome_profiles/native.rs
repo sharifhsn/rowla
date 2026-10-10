@@ -156,8 +156,8 @@ impl CachedCatalog {
         self.catalog = Some(catalog);
     }
 }
-pub(crate) fn start() -> (mpsc::SyncSender<Vec<Browser>>, mpsc::Receiver<Vec<Catalog>>) {
-    let (tx, rx) = mpsc::sync_channel::<Vec<Browser>>(1);
+pub(crate) fn start() -> (mpsc::SyncSender<Browsers>, mpsc::Receiver<Vec<Catalog>>) {
+    let (tx, rx) = mpsc::sync_channel::<Browsers>(1);
     let (result_tx, result_rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let mut previous: BTreeMap<Browser, CachedCatalog> = BTreeMap::new();
@@ -165,11 +165,11 @@ pub(crate) fn start() -> (mpsc::SyncSender<Vec<Browser>>, mpsc::Receiver<Vec<Cat
             if crate::runtime::stopping() {
                 break;
             }
-            previous.retain(|browser, _| browsers.contains(browser));
+            previous.retain(|browser, _| browsers.contains(&Some(*browser)));
             let Some(home) = std::env::var_os("HOME") else {
                 break;
             };
-            for browser in browsers.into_iter().take(4) {
+            for browser in browsers.into_iter().flatten() {
                 let root = PathBuf::from(&home)
                     .join("Library/Application Support/Google")
                     .join(browser.directory());

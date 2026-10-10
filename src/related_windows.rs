@@ -32,74 +32,90 @@ fn contains(parent: &Window, child: &Window) -> bool {
 }
 
 pub(crate) fn groups<'a>(windows: &[&'a Window]) -> Vec<Group<'a>> {
-    let mut apps: HashMap<i32, Vec<&Window>> = HashMap::new();
-    for w in windows {
-        apps.entry(w.pid).or_default().push(w);
-    }
+    let mut apps = None;
     let mut parents = HashMap::new();
     for w in windows {
+        if w.parent_id.is_none() && !w.subordinate && (!w.tabbed_hidden || w.minimized || w.hidden)
+        {
+            continue;
+        }
         // Incomplete AX scans retain these owned records. Keep their known
         // relationships until a complete scan removes or updates them.
-        let candidates: Vec<_> = apps[&w.pid]
-            .iter()
+        let apps = apps.get_or_insert_with(|| {
+            let mut apps: HashMap<i32, Vec<&Window>> = HashMap::new();
+            for p in windows
+                .iter()
+                .copied()
+                .filter(|p| !p.subordinate && !p.tabbed_hidden)
+            {
+                apps.entry(p.pid).or_default().push(p);
+            }
+            apps
+        });
+        let mut candidates = apps
+            .get(&w.pid)
+            .into_iter()
+            .flatten()
             .copied()
-            .filter(|p| p.id != w.id && !p.subordinate && !p.tabbed_hidden)
-            .collect();
+            .filter(|p| p.id != w.id);
         let parent = if let Some(id) = w.parent_id {
-            candidates.iter().find(|p| p.id == id).copied()
+            candidates.find(|p| p.id == id)
         } else if w.subordinate {
             // A utility panel often has AXApplication as its parent. Attach it
             // only to a sole main window or one unambiguous containing window.
-            if candidates.len() == 1 {
-                candidates.first().copied()
+            let mut unique = candidates.clone();
+            let first = unique.next();
+            if unique.next().is_none() {
+                first
             } else {
-                let mut contained = candidates.iter().copied().filter(|p| contains(p, w));
+                let mut contained = candidates.filter(|p| contains(p, w));
                 let first = contained.next();
                 first.filter(|_| contained.next().is_none())
             }
-        } else if w.tabbed_hidden && !w.minimized && !w.hidden {
+        } else {
             // Geometry alone is insufficient: the visible owner must expose
             // a native tab bar. Ambiguous stacks remain separate.
             let mut matches = candidates
-                .iter()
-                .copied()
                 .filter(|p| p.native_tabs && !p.minimized && !p.hidden && same_frame(p, w));
             let first = matches.next();
             first.filter(|_| matches.next().is_none())
-        } else {
-            None
         };
         if let Some(parent) = parent {
-            parents.insert(w.id, parent.id);
+            parents.insert(w.id, parent);
         }
     }
-    let positions: HashMap<_, _> = windows.iter().enumerate().map(|(i, w)| (w.id, i)).collect();
-    let mut groups: Vec<_> = windows
-        .iter()
-        .filter(|w| !parents.contains_key(&w.id))
-        .map(|w| Group {
-            main: w,
-            children: Vec::new(),
-        })
-        .collect();
-    let roots: HashMap<_, _> = groups
-        .iter()
-        .enumerate()
-        .map(|(i, g)| (g.main.id, i))
-        .collect();
-    for w in windows {
-        if let Some(root) = parents.get(&w.id).and_then(|id| roots.get(id)) {
-            groups[*root].children.push(w);
-        }
-    }
-    groups.sort_by_key(|g| {
-        g.children
+    drop(apps);
+    if parents.is_empty() {
+        return windows
             .iter()
-            .map(|w| positions[&w.id])
-            .chain(std::iter::once(positions[&g.main.id]))
-            .min()
-            .unwrap()
-    });
+            .map(|w| Group {
+                main: w,
+                children: Vec::new(),
+            })
+            .collect();
+    }
+    let root_count = windows.len() - parents.len();
+    let mut groups: Vec<Group<'a>> = Vec::with_capacity(root_count);
+    let mut roots = HashMap::with_capacity(root_count);
+    for w in windows {
+        let main = parents.get(&w.id).copied().unwrap_or(w);
+        if parents.contains_key(&main.id) {
+            continue;
+        }
+        // The first member fixes the group's position, including a hidden tab
+        // that precedes its visible owner. No separate position map or sort.
+        let root = *roots.entry(main.id).or_insert_with(|| {
+            let index = groups.len();
+            groups.push(Group {
+                main,
+                children: Vec::new(),
+            });
+            index
+        });
+        if w.id != main.id {
+            groups[root].children.push(w);
+        }
+    }
     groups
 }
 
@@ -234,6 +250,24 @@ mod tests {
                 assert_eq!(ids(&windows), expected, "scan {cycle}");
             }
         }
+    }
+    #[test]
+    fn interleaved_groups_keep_the_position_of_their_first_member() {
+        let child = |id, parent| Window {
+            parent_id: Some(parent),
+            ..window(id)
+        };
+        assert_eq!(
+            ids(&[
+                child(2, 1),
+                window(10),
+                child(4, 3),
+                window(3),
+                child(5, 1),
+                window(1)
+            ]),
+            [(1, vec![2, 5]), (10, vec![]), (3, vec![4])]
+        );
     }
     #[test]
     fn owners_must_be_present_and_from_the_same_process() {

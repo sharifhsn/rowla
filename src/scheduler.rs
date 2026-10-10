@@ -30,8 +30,10 @@ impl FairQueue {
         }
     }
     pub(crate) fn notify_all(&mut self) {
-        for pid in self.live.keys().copied().collect::<Vec<_>>() {
-            self.notify(pid);
+        for &pid in self.live.keys() {
+            if self.queued.insert(pid) {
+                self.queue.push_back(pid);
+            }
         }
     }
     pub(crate) fn next(&mut self, now: Instant) -> Option<i32> {

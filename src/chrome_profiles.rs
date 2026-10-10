@@ -21,6 +21,7 @@ pub(crate) enum Browser {
     Dev,
     Canary,
 }
+pub(crate) type Browsers = [Option<Browser>; 4];
 impl Browser {
     pub(crate) fn for_bundle(bundle: &str) -> Option<Self> {
         match bundle {

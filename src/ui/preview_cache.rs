@@ -68,8 +68,13 @@ impl<T> PreviewCache<T> {
     pub(super) fn retain(&mut self, mut alive: impl FnMut(u32) -> bool) {
         // A minimized source cannot supply fresh frames. Keep its last bitmap
         // until replacement, budget eviction or closure; age controls refresh only.
-        self.entries.retain(|e| alive(e.id));
-        self.bytes = self.entries.iter().map(|e| e.bytes).sum();
+        self.entries.retain(|e| {
+            let keep = alive(e.id);
+            if !keep {
+                self.bytes -= e.bytes;
+            }
+            keep
+        });
     }
     pub(super) fn clear(&mut self) {
         self.entries.clear();

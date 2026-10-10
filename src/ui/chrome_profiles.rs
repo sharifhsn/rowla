@@ -1,6 +1,6 @@
 //! Shared profile badges. File reads and PNG decoding stay off the UI thread.
 use super::*;
-use crate::chrome_profiles::{AVATAR_SIDE, Browser, Catalog, Profile};
+use crate::chrome_profiles::{AVATAR_SIDE, Browser, Browsers, Catalog, Profile};
 use block2::RcBlock;
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{
@@ -13,32 +13,30 @@ struct Cached {
     source: Profile,
     image: Retained<NSImage>,
 }
-type FileWorker = (mpsc::SyncSender<Vec<Browser>>, mpsc::Receiver<Vec<Catalog>>);
+type FileWorker = (mpsc::SyncSender<Browsers>, mpsc::Receiver<Vec<Catalog>>);
 #[derive(Default)]
 pub(super) struct Service {
     catalogs: Vec<Catalog>,
     images: BTreeMap<(Browser, String), Cached>,
     worker: Option<FileWorker>,
-    requested: Vec<Browser>,
+    requested: Browsers,
     next: Option<Instant>,
     pending: bool,
 }
 impl Service {
     pub(super) fn poll(&mut self, windows: &[Window], enabled: bool) -> bool {
-        let mut active = Vec::with_capacity(4);
+        let mut active = [None; 4];
         if enabled {
             for browser in windows
                 .iter()
                 .filter_map(|w| Browser::for_bundle(&w.bundle))
             {
-                if !active.contains(&browser) {
-                    active.push(browser);
-                }
+                active[browser as usize] = Some(browser);
             }
-            active.sort();
         }
+        let empty = active.iter().all(Option::is_none);
         let mut changed = false;
-        if active.is_empty() && !self.catalogs.is_empty() {
+        if empty && !self.catalogs.is_empty() {
             self.install(vec![]);
             changed = true;
         }
@@ -56,14 +54,14 @@ impl Service {
             }
         }
         if (active != self.requested
-            || (!active.is_empty() && self.next.is_none_or(|next| Instant::now() >= next)))
+            || (!empty && self.next.is_none_or(|next| Instant::now() >= next)))
             && !self.pending
         {
-            if self.worker.is_none() && !active.is_empty() {
+            if self.worker.is_none() && !empty {
                 self.worker = Some(crate::chrome_profiles::native::start());
             }
             if let Some((tx, _)) = &self.worker
-                && tx.try_send(active.clone()).is_ok()
+                && tx.try_send(active).is_ok()
             {
                 self.requested = active;
                 self.pending = true;
@@ -270,4 +268,64 @@ pub(super) fn apply(state: &Shared, button: &ActionButton, window: &Window) {
             "\n⌘W closes this window. ⌘Q quits its application.",
         ],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshes_coalesce_and_obsolete_replies_cannot_restore_closed_profiles() {
+        let (tx, requests) = mpsc::sync_channel(1);
+        let (replies, rx) = mpsc::sync_channel(1);
+        let mut service = Service {
+            worker: Some((tx, rx)),
+            ..Service::default()
+        };
+        let windows = |bundles: &[&str]| {
+            bundles
+                .iter()
+                .map(|bundle| Window {
+                    bundle: (*bundle).into(),
+                    ..Window::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        let catalog = |browser| Catalog {
+            browser,
+            profiles: vec![],
+        };
+        let chrome = windows(&[
+            "com.google.Chrome.beta",
+            "com.google.Chrome",
+            "com.google.Chrome.beta",
+            "org.mozilla.firefox",
+        ]);
+        assert!(!service.poll(&chrome, true));
+        assert_eq!(
+            requests.try_recv().unwrap(),
+            [Some(Browser::Stable), Some(Browser::Beta), None, None]
+        );
+        assert!(!service.poll(&chrome, true));
+        assert!(requests.try_recv().is_err());
+        replies
+            .send(vec![catalog(Browser::Stable), catalog(Browser::Beta)])
+            .unwrap();
+        assert!(service.poll(&chrome, true));
+        assert_eq!(service.catalogs.len(), 2);
+        assert!(!service.poll(&windows(&["com.google.Chrome.canary"]), true));
+        assert_eq!(
+            requests.try_recv().unwrap(),
+            [None, None, None, Some(Browser::Canary)]
+        );
+        assert!(service.poll(&[], true));
+        assert!(service.catalogs.is_empty());
+        replies.send(vec![catalog(Browser::Canary)]).unwrap();
+        assert!(!service.poll(&[], true));
+        assert_eq!(requests.try_recv().unwrap(), [None; 4]);
+        assert!(service.catalogs.is_empty());
+        replies.send(vec![]).unwrap();
+        assert!(!service.poll(&chrome, false));
+        assert!(requests.try_recv().is_err());
+    }
 }
