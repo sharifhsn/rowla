@@ -1,8 +1,16 @@
 //! Rowla's owned data model and macOS integration boundary.
 //! Native capture and UI internals are deliberately not exposed as raw pointers.
+#[cfg(any(target_os = "macos", test))]
+mod chrome_profiles;
 pub mod config;
 pub mod models;
+#[cfg(any(target_os = "macos", test))]
+mod related_windows;
 mod window_order;
+
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "ui/preview_lifecycle.rs"]
+mod preview_lifecycle;
 
 #[cfg(target_os = "macos")]
 mod capture;
@@ -82,6 +90,10 @@ pub mod macos {
     #[doc(hidden)]
     pub fn check_fixture_activation(pid: i32) -> bool {
         crate::platform::check_fixture_activation(pid)
+    }
+    #[doc(hidden)]
+    pub fn check_fixture_related(pid: i32) -> bool {
+        crate::platform::check_fixture_related(pid)
     }
     #[doc(hidden)]
     pub fn check_fixture_close(pid: i32) -> bool {

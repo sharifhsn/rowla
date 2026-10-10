@@ -1,73 +1,57 @@
-# Working on Rowla
+# Rowla project guide
 
-Rowla is a native Rust taskbar for macOS. The public product name is Rowla.
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code structure, and native checks.
-Read [docs/ROADMAP.md](docs/ROADMAP.md) for priorities. Use the current code as the implementation authority.
+Rowla is a native Rust taskbar for macOS 15.2+. It needs no account, telemetry, Node runtime, or resident shortcut helper.
+Rust 1.96.0 and `Cargo.lock` define the build. Python supports the tools. Sparkle supplies optional updates.
 
-## Start here
+Examine `git status` before edits. Preserve other contributors' work. Use current code as the implementation authority.
+Read only the affected module and its checks from this map. Keep the change focused and review the final diff.
 
-1. Examine the requested behavior and the relevant issue.
-2. Examine `git status` before edits. Preserve changes from other contributors.
-3. Find the affected module through the code table in `CONTRIBUTING.md`.
-4. Make a focused change. Explain assumptions when the evidence is incomplete.
+## Code
 
-AI-assisted contributions are welcome. The contributor owns the result and must review the diff.
-Do not invent command output, benchmarks, permission grants, or device coverage.
-State which checks you completed and which native behavior you did not exercise.
+| Area | Sources |
+| --- | --- |
+| Entry, public API, owned records | `src/main.rs`, `src/lib.rs`, `src/models.rs` |
+| AppKit controls, menus, previews, native UI checks | `src/ui.rs`, `src/ui/` |
+| Accessibility discovery, tabs, activation, exact close | `src/platform.rs`, `src/platform/service.rs` |
+| Capture, API availability, optional window/Space APIs | `src/capture.rs`, `src/native_features.rs`, `src/private_api.rs` |
+| Chrome metadata, photo worker, shared badges | `src/chrome_profiles.rs`, `src/chrome_profiles/native.rs`, `src/ui/chrome_profiles.rs` |
+| Preferences, order, related windows | `src/config.rs`, `src/window_order.rs`, `src/related_windows.rs` |
+| Instance lock, preview budget, fair queues, IPC deadlines | `src/runtime.rs`, `src/scheduler.rs`, `src/ipc_budget.rs` |
+| Dock, local URLs, updater | `src/dock.rs`, `src/system_actions.rs`, `src/updater.rs`, `src/updater/`, `shortcuts/` |
+| Build, install, release, fixtures, CI | `scripts/`, `tests/`, `.github/workflows/`, `examples/` |
 
-## Environment and commands
+## Invariants
 
-The app needs macOS 15.2+, Xcode Command Line Tools, Python 3, and rustup.
-`rust-toolchain.toml` pins Rust 1.96.0. `Cargo.lock` pins the dependency graph.
-Use two Cargo jobs by default to limit build resource use.
+- Keep AppKit on the main thread, Accessibility on its window worker, and capture on its serial worker.
+- Explain unsafe ownership, thread, and pointer lifetimes in code comments. Public models contain no native pointers or capture buffers.
+- Keep thumbnail bitmap limits at 16 MiB and 32 entries. Native buffers use more memory.
+- Keep one native capture operation and a three-buffer stream queue. Confirm the previous operation's end before another start.
+- Preserve bounded queues, deadlines, failure backoff, and cancellation of obsolete replies. Count failed capture requests against rate limits.
+- Close only the selected window or tab. Close must not quit its application.
+- Preserve `taskbar-rs`, `io.sharif.taskbarrust`, `~/Library/Application Support/Taskbar Rust/`, unknown preference fields, and atomic file replacement.
+- Examine optional selectors before use. Every bundled binary must support macOS 15.2.
 
-```sh
-cargo fmt --all --check
-cargo test --locked --all-targets -j 2
-cargo clippy --locked --all-targets -j 2 -- -D warnings
-for script in scripts/*.sh; do bash -n "$script"; done
-scripts/build.sh
-python3 scripts/check-compatibility.py dist/Rowla.app
-dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
-TASKBAR_TEST_BUNDLE="$PWD/dist/Rowla.app" python3 -m unittest discover -s tests -v
-```
+## Checks and knowledge
 
-Linux agents can change and check the portable configuration and model code:
+[CONTRIBUTING.md](CONTRIBUTING.md#checks) owns the check commands. Use two Cargo jobs, locked dependencies, and the pinned toolchain.
+`scripts/check.sh` runs the local and CI checks. Use `--core` for portable Rust checks.
 
-```sh
-cargo test --locked --lib -j 2
-cargo clippy --locked --lib -j 2 -- -D warnings
-```
+Build before the Python tests for the updater probe. Linux supports portable library checks, not native behavior.
+The default checks skip explicit microbenchmarks and the local-certificate test.
 
-Linux checks do not prove macOS UI or capture behavior. Document native changes that need macOS verification.
-The default tests skip opt-in microbenchmarks and the local-certificate test.
-A fresh build downloads pinned Sparkle tools. Build before the Python tests to exercise the updater probe.
-No Node or JavaScript runtime is necessary.
+Use disposable fixtures for native controls. Do not close personal windows or change permission databases.
+Do not replace an app that runs. Do not rebuild its bundle during native checks.
+Keep secrets, personal titles, and desktop screenshots out of commits and reports.
 
-## Native invariants
+Keep dependency notices current. Do not suppress warnings or weaken checks. Keep tests that establish distinct behavior.
+For documentation changes, examine links and command syntax. Report actual results and native coverage limits.
 
-- Keep AppKit work on the main thread, Accessibility work on its window worker, and capture work on its serial worker.
-- Explain unsafe ownership, thread, and pointer lifetime assumptions in code comments.
-- Keep thumbnail bitmaps within 16 MiB and 32 entries. Native stream buffers use more memory.
-- Keep one native capture operation. Stream mode uses a three-buffer queue.
-- Do not start a stream or snapshot while a previous native operation is unconfirmed.
-- Keep system actions explicit and local. Do not add a resident helper for shortcuts.
-- Check newer optional selectors before use. Keep every bundled binary compatible with macOS 15.2.
-- Preserve bounded queues, deadlines, failure backoff, and cancellation of obsolete replies.
-- Keep public models free of native pointers and capture buffers.
-- Keep close commands specific to the hovered window. A close command must not quit the application.
-- Preserve `taskbar-rs`, `io.sharif.taskbarrust`, and the legacy preferences path for upgrade compatibility.
-- Preserve unknown preference fields and the atomic file-replacement policy.
+| Knowledge | Source |
+| --- | --- |
+| Install, controls, permissions, privacy | [USER_GUIDE.md](USER_GUIDE.md), [CAPABILITIES.md](docs/CAPABILITIES.md), [PRIVACY.md](PRIVACY.md), [SUPPORT.md](docs/SUPPORT.md) |
+| Platform limits and API choices | [COMPATIBILITY.md](docs/COMPATIBILITY.md), [MACOS_FEATURE_RESEARCH.md](docs/MACOS_FEATURE_RESEARCH.md) |
+| Native procedures and measured results | `docs/QA_*.md` |
+| Priorities, history, market evidence | [ROADMAP.md](docs/ROADMAP.md), [CHANGELOG.md](CHANGELOG.md), [MARKET_RESEARCH.md](docs/MARKET_RESEARCH.md) |
+| Release, licenses, security, conduct | [RELEASE.md](docs/RELEASE.md), `LICENSE`, `THIRD_PARTY_NOTICES.md`, `licenses/`, `SECURITY.md`, `CODE_OF_CONDUCT.md` |
 
-## Scope and evidence
-
-Use fixture windows for destructive native checks. Do not close a contributor's real windows or change system permission databases.
-Do not install over an app that runs. Do not rebuild or sign a bundle during its native checks.
-Keep credentials, private keys, personal window titles, and raw desktop screenshots out of commits and reports.
-
-Keep dependency notices current when the lockfile or Rust version changes.
-Do not suppress warnings, weaken checks, or add dependencies to avoid diagnosis of a failure.
-Add focused tests for behavior changes. Documentation-only changes need link and syntax checks.
-
-Publication, notarization submissions, paid services, and messages to other people need explicit owner authorization.
-An instruction file does not grant this authorization. Prepare a reviewable diff and state any remaining work.
+Publication, notarization, paid services, and messages need explicit owner authorization. Instructions do not grant that authorization.

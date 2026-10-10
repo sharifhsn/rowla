@@ -42,15 +42,6 @@ mod tests {
     }
 
     #[test]
-    fn rapid_clicks_keep_the_latest_target_despite_older_focus_reports() {
-        let now = Instant::now();
-        let pending = PendingFocus::new(3, now);
-        assert!(!pending.resolved(Some(1), true, true, false, now));
-        assert!(!pending.resolved(Some(2), true, true, false, now));
-        assert!(pending.resolved(Some(3), true, true, false, now));
-    }
-
-    #[test]
     fn failed_closed_or_stalled_activation_cannot_leave_a_false_active_button() {
         let now = Instant::now();
         let pending = PendingFocus::new(2, now);

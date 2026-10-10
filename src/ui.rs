@@ -25,17 +25,23 @@ use std::{
 };
 mod active_feedback;
 mod brand;
+mod chrome_profiles;
 mod hover_close;
 mod preview_cache;
 mod preview_frame;
 mod preview_lifecycle;
 mod qa;
+mod related;
 mod sort_order;
 type Shared = Rc<RefCell<State>>;
 type WeakState = Weak<RefCell<State>>;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Action {
     Window(u32),
+    Bubble(u32),
+    Tab(u32, u64),
+    CloseTab(u32, u64),
+    RelatedMore(u32),
     Raise(u32),
     Preview(u32),
     ScrollTasks(u32, bool),
@@ -125,12 +131,15 @@ struct State {
     hover_close: Option<hover_close::Service>,
     performance: qa::Performance,
     config: Config,
-    snapshot: Snapshot,
+    // Redraws retain this owned snapshot. Worker updates replace it.
+    snapshot: Rc<Snapshot>,
     pending_focus: Option<active_feedback::PendingFocus>,
+    pending_tab: Option<(u32, u64, Instant)>,
     pending_system_sort: bool,
     received_snapshot: bool,
     bars: Vec<Bar>,
     icons: HashMap<String, Retained<NSImage>>,
+    profile_badges: chrome_profiles::Service,
     order: Vec<u32>,
     activity: crate::window_order::Activity,
     sort_order_error: Option<String>,
@@ -173,6 +182,13 @@ struct State {
     last_catalog: Instant,
 }
 impl State {
+    fn save_config(&mut self) {
+        if self.gui_smoke.is_none()
+            && let Err(error) = self.config.save()
+        {
+            self.error = error;
+        }
+    }
     fn delegate(&self) -> &Delegate {
         let delegate = self
             .delegate
@@ -194,6 +210,20 @@ impl State {
             match &command {
                 Command::Activate(id, false) => {
                     if let Some(window) = self.snapshot.windows.iter().find(|w| w.id == *id)
+                        && let Some(target) =
+                            NSRunningApplication::runningApplicationWithProcessIdentifier(
+                                window.pid,
+                            )
+                    {
+                        app.yieldActivationToApplication(&target);
+                    }
+                }
+                Command::SelectTab(token) => {
+                    if let Some(window) = self
+                        .snapshot
+                        .windows
+                        .iter()
+                        .find(|w| w.tabs.iter().any(|t| t.id == *token))
                         && let Some(target) =
                             NSRunningApplication::runningApplicationWithProcessIdentifier(
                                 window.pid,
@@ -231,47 +261,141 @@ struct DelegateIvars {
     state: Shared,
 }
 define_class!(
- #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=DelegateIvars] #[name = "TaskbarRustDelegate"] struct Delegate;
- unsafe impl NSObjectProtocol for Delegate {}
- unsafe impl NSTextFieldDelegate for Delegate {}
- unsafe impl NSSearchFieldDelegate for Delegate {}
- unsafe impl NSControlTextEditingDelegate for Delegate {
-  #[unsafe(method(control:textView:doCommandBySelector:))]
-  unsafe fn search_command(&self,_control:&NSControl,_view:&NSTextView,command:Sel)->bool {
-   if command==sel!(moveDown:){move_start_selection(&self.ivars().state,1);true}
-   else if command==sel!(moveUp:){move_start_selection(&self.ivars().state,-1);true}
-   else if command==sel!(insertNewline:){activate_start_selection(&self.ivars().state);true}
-   else if command==sel!(cancelOperation:){if let Some(m)=self.ivars().state.borrow_mut().start.take(){m.panel.close();}true}
-   else{false}
-  }
- }
- unsafe impl NSApplicationDelegate for Delegate {
-  #[unsafe(method(applicationDidFinishLaunching:))]
-  fn launched(&self,_n:&NSNotification){let s=&self.ivars().state;
-   initialize_preview(s);hover_close::install(s);if s.borrow().gui_smoke.is_none(){s.borrow().command(Command::Dock(s.borrow().config.fully_hide_dock));}let timer=unsafe{NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(0.1,self,sel!(tick:),None,true)};s.borrow_mut().timer=Some(timer);render(s);
-   if s.borrow().gui_smoke.is_none(){let enabled=s.borrow().config.start_at_login;if let Err(e)=platform::login(enabled){s.borrow_mut().error=e;}}
-  }
-  #[unsafe(method(applicationWillTerminate:))]
-  fn terminating(&self,_n:&NSNotification){let mut s=self.ivars().state.borrow_mut();if let Some(t)=s.timer.take(){t.invalidate();}
-   if let Some(t)=s.interaction_timer.take(){t.invalidate();}s.hover_close.take();crate::runtime::stop();let _=s.tx.try_send(Command::Stop);if s.gui_smoke.is_none(){if let Err(e)=s.config.save(){s.error=e;}let _=crate::dock::shutdown_restore();}crate::capture::shutdown();}
-  #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
-  fn reopen(&self,_a:&NSApplication,_v:bool)->bool{show_preferences(&self.ivars().state,0);true}
-  #[unsafe(method(application:openURLs:))]
-  fn open_urls(&self,_app:&NSApplication,urls:&NSArray<NSURL>){
-   for url in urls {
-    if let Some(url)=url.absoluteString() && let Some(action)=crate::system_actions::SystemAction::from_url(&url.to_string()) {
-     system_action(&self.ivars().state,action);
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DelegateIvars]
+    #[name = "TaskbarRustDelegate"]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+    unsafe impl NSTextFieldDelegate for Delegate {}
+    unsafe impl NSSearchFieldDelegate for Delegate {}
+
+    unsafe impl NSControlTextEditingDelegate for Delegate {
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        unsafe fn search_command(
+            &self,
+            _control: &NSControl,
+            _view: &NSTextView,
+            command: Sel,
+        ) -> bool {
+            let state = &self.ivars().state;
+            if command == sel!(moveDown:) {
+                move_start_selection(state, 1);
+                true
+            } else if command == sel!(moveUp:) {
+                move_start_selection(state, -1);
+                true
+            } else if command == sel!(insertNewline:) {
+                activate_start_selection(state);
+                true
+            } else if command == sel!(cancelOperation:) {
+                if let Some(menu) = state.borrow_mut().start.take() {
+                    menu.panel.close();
+                }
+                true
+            } else {
+                false
+            }
+        }
     }
-   }
-  }
- }
- impl Delegate {
-  #[unsafe(method(tick:))] fn tick(&self,_t:&NSTimer){tick(&self.ivars().state);}
-  #[unsafe(method(interactionTick:))] fn interaction_tick(&self,_t:&NSTimer){autoreleasepool(|_| interaction_tick(&self.ivars().state));}
-  #[unsafe(method(menuAction:))] fn menu_action(&self,sender:&NSMenuItem){if let Some(o)=sender.representedObject()&& let Some(s)=o.downcast_ref::<NSString>()&& let Ok(a)=serde_json::from_str(&s.to_string()){dispatch(&self.ivars().state,a);}}
-  #[unsafe(method(statusAction:))] fn status_action(&self,_s:&AnyObject){show_preferences(&self.ivars().state,0);}
-  #[unsafe(method(startSearch:))] fn start_search(&self,_field:&NSSearchField){activate_start_selection(&self.ivars().state);}
- }
+
+    unsafe impl NSApplicationDelegate for Delegate {
+        #[unsafe(method(applicationDidFinishLaunching:))]
+        fn launched(&self, _notification: &NSNotification) {
+            let state = &self.ivars().state;
+            initialize_preview(state);
+            hover_close::install(state);
+            if state.borrow().gui_smoke.is_none() {
+                state.borrow().command(Command::Dock(state.borrow().config.fully_hide_dock));
+            }
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    0.1,
+                    self,
+                    sel!(tick:),
+                    None,
+                    true,
+                )
+            };
+            state.borrow_mut().timer = Some(timer);
+            render(state);
+            if state.borrow().gui_smoke.is_none() {
+                let enabled = state.borrow().config.start_at_login;
+                if let Err(error) = platform::login(enabled) {
+                    state.borrow_mut().error = error;
+                }
+            }
+        }
+
+        #[unsafe(method(applicationWillTerminate:))]
+        fn terminating(&self, _notification: &NSNotification) {
+            let mut state = self.ivars().state.borrow_mut();
+            if let Some(timer) = state.timer.take() {
+                timer.invalidate();
+            }
+            if let Some(timer) = state.interaction_timer.take() {
+                timer.invalidate();
+            }
+            state.hover_close.take();
+            crate::runtime::stop();
+            let _ = state.tx.try_send(Command::Stop);
+            state.save_config();
+            if state.gui_smoke.is_none() {
+                let _ = crate::dock::shutdown_restore();
+            }
+            crate::capture::shutdown();
+        }
+
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            show_preferences(&self.ivars().state, 0);
+            true
+        }
+
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            for url in urls {
+                if let Some(url) = url.absoluteString()
+                    && let Some(action) = crate::system_actions::SystemAction::from_url(&url.to_string())
+                {
+                    system_action(&self.ivars().state, action);
+                }
+            }
+        }
+    }
+
+    impl Delegate {
+        #[unsafe(method(tick:))]
+        fn tick(&self, _timer: &NSTimer) {
+            tick(&self.ivars().state);
+        }
+
+        #[unsafe(method(interactionTick:))]
+        fn interaction_tick(&self, _timer: &NSTimer) {
+            autoreleasepool(|_| interaction_tick(&self.ivars().state));
+        }
+
+        #[unsafe(method(menuAction:))]
+        fn menu_action(&self, sender: &NSMenuItem) {
+            if let Some(object) = sender.representedObject()
+                && let Some(text) = object.downcast_ref::<NSString>()
+                && let Ok(action) = serde_json::from_str(&text.to_string())
+            {
+                dispatch(&self.ivars().state, action);
+            }
+        }
+
+        #[unsafe(method(statusAction:))]
+        fn status_action(&self, _sender: &AnyObject) {
+            show_preferences(&self.ivars().state, 0);
+        }
+
+        #[unsafe(method(startSearch:))]
+        fn start_search(&self, _field: &NSSearchField) {
+            activate_start_selection(&self.ivars().state);
+        }
+    }
 );
 impl Delegate {
     fn new(m: MainThreadMarker, state: Shared) -> Retained<Self> {
@@ -296,33 +420,213 @@ struct ButtonIvars {
     start_index: Cell<Option<usize>>,
     badge: Cell<bool>,
     window_style: Cell<Option<WindowButtonStyle>>,
+    reserved_width: Cell<f64>,
+    related_ids: RefCell<Vec<u32>>,
+    hovered: Cell<bool>,
+    profile_badge: RefCell<Option<Retained<NSImage>>>,
 }
 define_class!(
- #[unsafe(super=NSButton)] #[thread_kind=MainThreadOnly] #[ivars=ButtonIvars] #[name = "TaskbarRustActionButton"] struct ActionButton;
- unsafe impl NSObjectProtocol for ActionButton {}
- impl ActionButton {
-  #[unsafe(method(drawRect:))] fn draw(&self,r:NSRect){
-   let focused=self.ivars().state.upgrade().and_then(|s|s.try_borrow().ok().map(|s|matches!(self.ivars().action,Action::Window(id) if s.focused_id()==Some(id)))).unwrap_or(false);
-   let selected=self.ivars().start_index.get().is_some_and(|index|self.ivars().state.upgrade().is_some_and(|s|s.try_borrow().ok().is_some_and(|s|s.start.as_ref().is_some_and(|m|m.selected==index))));
-   if focused||selected{NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),4.0,4.0).fill();}
-   unsafe{let _:()=msg_send![super(self),drawRect:r];}
-   if self.ivars().badge.get(){NSColor::systemRedColor().set();let bounds=self.bounds();NSBezierPath::bezierPathWithOvalInRect(rect(bounds.size.width-9.0,bounds.size.height-9.0,6.0,6.0)).fill();}
-  }
-  #[unsafe(method(pressed:))] fn pressed(&self,_sender:&AnyObject){if let Some(s)=self.ivars().state.upgrade(){dispatch(&s,self.ivars().action.clone());}}
-  #[unsafe(method(acceptsFirstMouse:))] fn accepts_first_mouse(&self,_e:Option<&NSEvent>)->bool{true}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();if let (Some(s),Action::Window(id))=(self.ivars().state.upgrade(),&self.ivars().action)&& let Some(win)=self.window(){let r=win.convertRectToScreen(self.convertRect_toView(self.bounds(),None));begin_hover(&s,*id,win.windowNumber(),r);}}
-  #[unsafe(method(mouseExited:))] fn exited(&self,_e:&NSEvent){if let Some(s)=self.ivars().state.upgrade()&& let Ok(mut s)=s.try_borrow_mut()&& matches!(self.ivars().action,Action::Window(id) if s.hover.is_some_and(|h|h.0==id)){s.hover=None;}}
-  #[unsafe(method(rightMouseDown:))] fn right_down(&self,e:&NSEvent){if let Some(s)=self.ivars().state.upgrade(){let m=context_menu(&s,Some(&self.ivars().action));{NSMenu::popUpContextMenu_withEvent_forView(&m,e,self);}}}
-  #[unsafe(method(otherMouseDown:))] fn other_down(&self,e:&NSEvent){if e.buttonNumber()==2&& let (Some(s),Action::Window(id))=(self.ivars().state.upgrade(),&self.ivars().action)&& s.borrow().config.middle_closes{dispatch(&s,Action::Close(*id));}}
-  #[unsafe(method(mouseDown:))] fn down(&self,e:&NSEvent){NSCursor::arrowCursor().set();if !self.isEnabled(){return;}self.ivars().drag.set(Some(e.locationInWindow()));self.ivars().dragged.set(false);self.highlight(true);}
-  #[unsafe(method(mouseDragged:))] fn dragged(&self,e:&NSEvent){NSCursor::arrowCursor().set();if self.can_drag()&& let Some(start)=self.ivars().drag.get(){let p=e.locationInWindow();if (p.x-start.x).abs()>5.0||(p.y-start.y).abs()>5.0{self.ivars().dragged.set(true);}}}
-  #[unsafe(method(mouseUp:))] fn up(&self,e:&NSEvent){NSCursor::arrowCursor().set();self.highlight(false);if self.ivars().drag.take().is_none()||!self.isEnabled(){return;}
-   if let Some(s)=self.ivars().state.upgrade(){let reordered=self.ivars().dragged.replace(false)&&reorder(&s,&self.ivars().action,e.locationInWindow().x,self.window().map(|w|w.windowNumber()).unwrap_or(0));if !reordered&& contains(self.bounds(),self.convertPoint_fromView(e.locationInWindow(),None)){dispatch(&s,self.ivars().action.clone());}}}
- }
+    #[unsafe(super = NSButton)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ButtonIvars]
+    #[name = "TaskbarRustActionButton"]
+    struct ActionButton;
+
+    unsafe impl NSObjectProtocol for ActionButton {}
+
+    impl ActionButton {
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, dirty: NSRect) {
+            let ivars = self.ivars();
+            let bounds = self.bounds();
+            let focused = ivars.window_style.get().is_some_and(|style| style.focused);
+            let selected = ivars.start_index.get().is_some_and(|index| {
+                ivars.state.upgrade().is_some_and(|state| {
+                    state.try_borrow().ok().is_some_and(|state| {
+                        state.start.as_ref().is_some_and(|menu| menu.selected == index)
+                    })
+                })
+            });
+            let bubble = matches!(
+                ivars.action,
+                Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_)
+            );
+            if bubble {
+                let color = if focused {
+                    NSColor::controlAccentColor()
+                } else {
+                    NSColor::secondaryLabelColor()
+                };
+                color
+                    .colorWithAlphaComponent(if ivars.hovered.get() { 0.28 } else { 0.15 })
+                    .set();
+                let radius = bounds.size.height / 2.0;
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).fill();
+            } else if focused || selected {
+                NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, 4.0, 4.0).fill();
+            }
+            NSGraphicsContext::saveGraphicsState_class();
+            let inset = ivars.reserved_width.get();
+            let content = rect(0.0, 0.0, (bounds.size.width - inset).max(0.0), bounds.size.height);
+            if inset > 0.0 {
+                NSBezierPath::bezierPathWithRect(content).addClip();
+            }
+            if inset > 0.0 && let Some(cell) = self.cell() {
+                cell.drawWithFrame_inView(content, self);
+            } else {
+                unsafe {
+                    let _: () = msg_send![super(self), drawRect: dirty];
+                }
+            }
+            NSGraphicsContext::restoreGraphicsState_class();
+            chrome_profiles::draw(self);
+            if ivars.badge.get() {
+                NSColor::systemRedColor().set();
+                NSBezierPath::bezierPathWithOvalInRect(rect(
+                    bounds.size.width - inset - 9.0,
+                    bounds.size.height - 9.0,
+                    6.0,
+                    6.0,
+                )).fill();
+            }
+        }
+
+        #[unsafe(method(pressed:))]
+        fn pressed(&self, _sender: &AnyObject) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                dispatch(&state, self.ivars().action.clone());
+            }
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.ivars().hovered.set(true);
+            NSView::setNeedsDisplay(self, true);
+            let Some(state) = self.ivars().state.upgrade() else {
+                return;
+            };
+            match self.ivars().action {
+                Action::Window(id) | Action::Bubble(id) => {
+                    if let Some(window) = self.window() {
+                        let frame = window.convertRectToScreen(self.convertRect_toView(self.bounds(), None));
+                        begin_hover(&state, id, window.windowNumber(), frame);
+                    }
+                }
+                Action::Tab(..) => {
+                    hide_preview(&state);
+                    state.borrow_mut().hover = None;
+                }
+                _ => {}
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn exited(&self, _event: &NSEvent) {
+            self.ivars().hovered.set(false);
+            NSView::setNeedsDisplay(self, true);
+            if let Some(state) = self.ivars().state.upgrade()
+                && let Ok(mut state) = state.try_borrow_mut()
+                && matches!(self.ivars().action, Action::Window(id) | Action::Bubble(id) if state.hover.is_some_and(|hover| hover.0 == id))
+            {
+                state.hover = None;
+            }
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_down(&self, event: &NSEvent) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let menu = context_menu(&state, Some(&self.ivars().action));
+                NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+            }
+        }
+
+        #[unsafe(method(otherMouseDown:))]
+        fn other_down(&self, event: &NSEvent) {
+            if event.buttonNumber() == 2
+                && let Some(state) = self.ivars().state.upgrade()
+                && state.borrow().config.middle_closes
+            {
+                match self.ivars().action {
+                    Action::Window(id) | Action::Bubble(id) => dispatch(&state, Action::Close(id)),
+                    Action::Tab(id, index) => dispatch(&state, Action::CloseTab(id, index)),
+                    _ => {}
+                }
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn down(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            if !self.isEnabled() {
+                return;
+            }
+            self.ivars().drag.set(Some(event.locationInWindow()));
+            self.ivars().dragged.set(false);
+            self.highlight(true);
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn dragged(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            if self.can_drag() && let Some(start) = self.ivars().drag.get() {
+                let point = event.locationInWindow();
+                if (point.x - start.x).abs() > 5.0 || (point.y - start.y).abs() > 5.0 {
+                    self.ivars().dragged.set(true);
+                }
+            }
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn up(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.highlight(false);
+            if self.ivars().drag.take().is_none() || !self.isEnabled() {
+                return;
+            }
+            let Some(state) = self.ivars().state.upgrade() else {
+                return;
+            };
+            let reordered = self.ivars().dragged.replace(false)
+                && reorder(
+                    &state,
+                    &self.ivars().action,
+                    event.locationInWindow().x,
+                    self.window().map_or(0, |window| window.windowNumber()),
+                );
+            if !reordered
+                && contains(self.bounds(), self.convertPoint_fromView(event.locationInWindow(), None))
+            {
+                dispatch(&state, self.ivars().action.clone());
+            }
+        }
+    }
 );
 impl ActionButton {
     fn set_window_focus(&self, focused: bool, font_size: f64) {
@@ -352,34 +656,37 @@ impl ActionButton {
     fn new(s: &Shared, action: Action, title: &str, r: NSRect) -> Retained<Self> {
         s.borrow_mut().performance.buttons_created += 1;
         let m = MainThreadMarker::new().unwrap();
-        let b: Retained<Self> = unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None)})),initWithFrame:r]
+        let ivars = ButtonIvars {
+            state: Rc::downgrade(s),
+            action,
+            drag: Cell::new(None),
+            dragged: Cell::new(false),
+            start_index: Cell::new(None),
+            badge: Cell::new(false),
+            window_style: Cell::new(None),
+            reserved_width: Cell::new(0.0),
+            related_ids: RefCell::new(Vec::new()),
+            hovered: Cell::new(false),
+            profile_badge: RefCell::new(None),
         };
+        let b: Retained<Self> =
+            unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] };
         b.setTitle(&NSString::from_str(title));
-        let accessible = if matches!(b.ivars().action, Action::Start(_)) {
-            "Start".into()
-        } else if matches!(b.ivars().action, Action::Sort) {
-            "Sort windows".into()
-        } else if matches!(b.ivars().action, Action::ClosePreview) {
-            "Close previewed window".into()
-        } else if title.is_empty() {
-            match &b.ivars().action {
-                Action::Pin(bundle, _) => s
-                    .borrow()
-                    .apps
-                    .iter()
-                    .find(|a| a.bundle == *bundle)
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| bundle.clone()),
-                Action::Start(_) => "Start".into(),
-                _ => "Taskbar action".into(),
-            }
-        } else {
-            title.into()
+        let accessible = match &b.ivars().action {
+            Action::Start(_) => "Start".into(),
+            Action::Sort => "Sort windows".into(),
+            Action::ClosePreview => "Close previewed window".into(),
+            Action::Pin(bundle, _) if title.is_empty() => s
+                .borrow()
+                .apps
+                .iter()
+                .find(|app| app.bundle == *bundle)
+                .map(|app| app.name.clone())
+                .unwrap_or_else(|| bundle.clone()),
+            _ if title.is_empty() => "Taskbar action".into(),
+            _ => title.into(),
         };
-        unsafe {
-            let _: () = msg_send![&*b,setAccessibilityLabel:&*NSString::from_str(&accessible)];
-        }
+        b.setAccessibilityLabel(Some(&NSString::from_str(&accessible)));
         if matches!(
             b.ivars().action,
             Action::Window(_) | Action::Pin(..) | Action::Start(_)
@@ -393,6 +700,14 @@ impl ActionButton {
         }
         b.setBezelStyle(NSBezelStyle::SmallSquare);
         b.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+        if matches!(
+            b.ivars().action,
+            Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_)
+        ) {
+            b.setBordered(false);
+            b.setAlignment(NSTextAlignment::Center);
+            b.setUsesSingleLineMode(true);
+        }
         if matches!(b.ivars().action, Action::Window(_) | Action::Pin(..)) {
             b.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
         }
@@ -419,51 +734,157 @@ struct BarIvars {
     display: u32,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
 }
-define_class!(
- #[unsafe(super=NSView)] #[thread_kind=MainThreadOnly] #[ivars=BarIvars] #[name = "TaskbarRustBarView"] struct BarView;
- unsafe impl NSObjectProtocol for BarView {}
- impl BarView {
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(updateTrackingAreas))] fn update_tracking_areas(&self){update_arrow_tracking(self,&self.ivars().tracking);unsafe{let _:()=msg_send![super(self),updateTrackingAreas];}}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(rightMouseDown:))] fn right_down(&self,e:&NSEvent){if let Some(s)=self.ivars().state.upgrade(){let m=context_menu(&s,Some(&Action::HideBar(self.ivars().display,false)));{NSMenu::popUpContextMenu_withEvent_forView(&m,e,self);}}}
-  #[unsafe(method(scrollWheel:))] fn scroll(&self,e:&NSEvent){NSCursor::arrowCursor().set();if let Some(s)=self.ivars().state.upgrade(){let hide={let s=s.borrow();(e.scrollingDeltaY()<0.0&&s.config.scroll_down_hides)||(e.scrollingDeltaY()>0.0&&s.config.scroll_up_hides)};if hide{dispatch(&s,Action::HideBar(self.ivars().display,true));}}}
- }
-);
-impl BarView {
-    fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
-        let m = MainThreadMarker::new().unwrap();
-        unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(BarIvars{state:Rc::downgrade(s),display:d,tracking:RefCell::new(None)})),initWithFrame:r]
+impl BarIvars {
+    fn scroll(&self, event: &NSEvent) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let hide = {
+            let state = state.borrow();
+            (event.scrollingDeltaY() < 0.0 && state.config.scroll_down_hides)
+                || (event.scrollingDeltaY() > 0.0 && state.config.scroll_up_hides)
+        };
+        if hide {
+            dispatch(&state, Action::HideBar(self.display, true));
         }
     }
 }
 define_class!(
- #[unsafe(super=NSScrollView)] #[thread_kind=MainThreadOnly] #[ivars=BarIvars] #[name="TaskbarRustTaskScrollView"] struct TaskScrollView;
- unsafe impl NSObjectProtocol for TaskScrollView {}
- impl TaskScrollView {
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(updateTrackingAreas))] fn update_tracking_areas(&self){update_arrow_tracking(self,&self.ivars().tracking);unsafe{let _:()=msg_send![super(self),updateTrackingAreas];}}
-  #[unsafe(method(scrollWheel:))] fn scroll(&self,e:&NSEvent){
-   if e.scrollingDeltaX()!=0.0 || e.modifierFlags().contains(NSEventModifierFlags::Shift){unsafe{let _:()=msg_send![super(self),scrollWheel:e];}}
-   else if let Some(s)=self.ivars().state.upgrade(){let hide={let s=s.borrow();(e.scrollingDeltaY()<0.0&&s.config.scroll_down_hides)||(e.scrollingDeltaY()>0.0&&s.config.scroll_up_hides)};if hide{dispatch(&s,Action::HideBar(self.ivars().display,true));}}
-   NSCursor::arrowCursor().set();
-  }
- }
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = BarIvars]
+    #[name = "TaskbarRustBarView"]
+    struct BarView;
+
+    unsafe impl NSObjectProtocol for BarView {}
+
+    impl BarView {
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            update_arrow_tracking(self, &self.ivars().tracking);
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_down(&self, event: &NSEvent) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let menu = context_menu(&state, Some(&Action::HideBar(self.ivars().display, false)));
+                NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.ivars().scroll(event);
+        }
+    }
+);
+impl BarView {
+    fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
+        let m = MainThreadMarker::new().unwrap();
+        let ivars = BarIvars {
+            state: Rc::downgrade(s),
+            display: d,
+            tracking: RefCell::new(None),
+        };
+        unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] }
+    }
+}
+define_class!(
+    #[unsafe(super = NSScrollView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = BarIvars]
+    #[name = "TaskbarRustTaskScrollView"]
+    struct TaskScrollView;
+
+    unsafe impl NSObjectProtocol for TaskScrollView {}
+
+    impl TaskScrollView {
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            update_arrow_tracking(self, &self.ivars().tracking);
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll(&self, event: &NSEvent) {
+            if event.scrollingDeltaX() != 0.0
+                || event.modifierFlags().contains(NSEventModifierFlags::Shift)
+            {
+                unsafe {
+                    let _: () = msg_send![super(self), scrollWheel: event];
+                }
+            } else {
+                self.ivars().scroll(event);
+            }
+            NSCursor::arrowCursor().set();
+        }
+    }
 );
 impl TaskScrollView {
     fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
         let m = MainThreadMarker::new().unwrap();
-        unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(BarIvars{state:Rc::downgrade(s),display:d,tracking:RefCell::new(None)})),initWithFrame:r]
-        }
+        let ivars = BarIvars {
+            state: Rc::downgrade(s),
+            display: d,
+            tracking: RefCell::new(None),
+        };
+        unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] }
     }
 }
 fn update_arrow_tracking(view: &NSView, tracking: &RefCell<Option<Retained<NSTrackingArea>>>) {
@@ -512,9 +933,7 @@ fn reuse_button(
     if !native_text_matches(&b.title(), &[title]) {
         let title = NSString::from_str(title);
         b.setTitle(&title);
-        unsafe {
-            let _: () = msg_send![&*b,setAccessibilityLabel:&*title];
-        }
+        b.setAccessibilityLabel(Some(&title));
     }
     b
 }
@@ -568,11 +987,25 @@ struct SettingIvars {
     key: String,
 }
 define_class!(
- #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=SettingIvars] #[name = "TaskbarRustSettingTarget"] struct SettingTarget;
- unsafe impl NSObjectProtocol for SettingTarget {}
- impl SettingTarget {
-  #[unsafe(method(changed:))] fn changed(&self,sender:&NSControl){if let Some(state)=self.ivars().state.upgrade(){let mut s=state.borrow_mut();number_setting(&mut s.config,&self.ivars().key,sender.doubleValue());if let Err(e)=s.config.save(){s.error=e;}s.dirty=true;}}
- }
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SettingIvars]
+    #[name = "TaskbarRustSettingTarget"]
+    struct SettingTarget;
+
+    unsafe impl NSObjectProtocol for SettingTarget {}
+
+    impl SettingTarget {
+        #[unsafe(method(changed:))]
+        fn changed(&self, sender: &NSControl) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let mut state = state.borrow_mut();
+                number_setting(&mut state.config, &self.ivars().key, sender.doubleValue());
+                state.save_config();
+                state.dirty = true;
+            }
+        }
+    }
 );
 impl SettingTarget {
     fn new(s: &Shared, key: &str) -> Retained<Self> {
@@ -589,9 +1022,19 @@ impl SettingTarget {
     }
 }
 define_class!(
- #[unsafe(super=NSPanel)] #[thread_kind=MainThreadOnly] #[name = "TaskbarRustPopupPanel"] struct PopupPanel;
- unsafe impl NSObjectProtocol for PopupPanel {}
- impl PopupPanel {#[unsafe(method(cancelOperation:))] fn cancel(&self,_sender:Option<&AnyObject>){self.close();}}
+    #[unsafe(super = NSPanel)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TaskbarRustPopupPanel"]
+    struct PopupPanel;
+
+    unsafe impl NSObjectProtocol for PopupPanel {}
+
+    impl PopupPanel {
+        #[unsafe(method(cancelOperation:))]
+        fn cancel(&self, _sender: Option<&AnyObject>) {
+            self.close();
+        }
+    }
 );
 fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
@@ -682,6 +1125,24 @@ fn tick(state: &Shared) {
     autoreleasepool(|_| tick_inner(state));
 }
 fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
+    if s.pending_tab.is_some_and(|(id, index, at)| {
+        at.elapsed() >= Duration::from_secs(2)
+            || snapshot.control_error.is_some()
+            || !snapshot.trusted
+            || snapshot
+                .windows
+                .iter()
+                .find(|w| w.id == id)
+                .is_none_or(|w| {
+                    w.tabs
+                        .iter()
+                        .find(|t| t.id == index)
+                        .is_none_or(|t| t.selected)
+                })
+    }) {
+        s.pending_tab = None;
+        s.dirty = true;
+    }
     if s.pending_focus.is_some_and(|pending| {
         pending.resolved(
             snapshot.windows.iter().find(|w| w.focused).map(|w| w.id),
@@ -704,9 +1165,14 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
         s.dirty = true;
     }
     // Diagnostics and pending focus still update on an unchanged window list.
-    // Disabled previews must release any image or hover from the prior setting.
-    if !windows_changed && !permissions_changed && s.config.thumbnails && snapshot.screen_allowed {
-        s.snapshot = snapshot;
+    // Disabled previews must release their image, hover, cache, and capture first.
+    let preview_cleanup = (!s.config.thumbnails || !snapshot.screen_allowed)
+        && (s.hover.is_some()
+            || s.preview_id.is_some()
+            || s.capture_busy
+            || s.preview_cache.len() != 0);
+    if !windows_changed && !permissions_changed && !preview_cleanup {
+        s.snapshot = Rc::new(snapshot);
         return false;
     }
     let changed = snapshot.windows.iter().find(|w| w.focused).map(|w| w.id)
@@ -745,28 +1211,15 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
             p.image.setImage(None);
         }
     }
-    s.order.retain(|id| alive.contains(id));
-    s.known_spaces.retain(|id, _| alive.contains(id));
-    let mut ordered: HashSet<_> = s.order.iter().copied().collect();
-    for w in &snapshot.windows {
-        if s.config.reset_space_order
-            && s.known_spaces
-                .get(&w.id)
-                .is_some_and(|old| *old != w.on_space)
-        {
-            ordered.remove(&w.id);
-        }
-        s.known_spaces.insert(w.id, w.on_space);
-    }
-    // Remove all moved sources once, then append them in discovery order.
-    // Membership checks do not rescan the strip for each source window.
-    s.order.retain(|id| ordered.contains(id));
-    for w in &snapshot.windows {
-        if ordered.insert(w.id) {
-            s.order.push(w.id);
-        }
-    }
-    s.snapshot = snapshot;
+    crate::window_order::reconcile(
+        &mut s.order,
+        &mut s.known_spaces,
+        &s.snapshot.windows,
+        &snapshot.windows,
+        s.config.reset_space_order,
+        &alive,
+    );
+    s.snapshot = Rc::new(snapshot);
     prune_preview_sources(s, &alive);
     permissions_changed
 }
@@ -788,10 +1241,27 @@ fn tick_inner(state: &Shared) {
             s.received_snapshot = true;
             permissions_changed |= apply_snapshot(&mut s, snapshot);
         }
+        if s.gui_smoke.is_none() {
+            let enabled = s.config.chrome_profile_badges;
+            let State {
+                profile_badges,
+                snapshot,
+                ..
+            } = &mut *s;
+            if profile_badges.poll(&snapshot.windows, enabled) {
+                s.dirty = true;
+            }
+        }
         if s.pending_focus
             .is_some_and(|pending| pending.expired(Instant::now()))
         {
             s.pending_focus = None;
+            s.dirty = true;
+        }
+        if s.pending_tab
+            .is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(2))
+        {
+            s.pending_tab = None;
             s.dirty = true;
         }
         if let Ok(apps) = s.apps_rx.try_recv() {
@@ -912,6 +1382,7 @@ struct BarSettings {
     hidden_displays: Vec<u32>,
     theme: String,
     show_tabs: bool,
+    compact_related_windows: bool,
     show_hidden: bool,
     discord_hidden: bool,
     all_displays: bool,
@@ -938,6 +1409,7 @@ impl From<&Config> for BarSettings {
             hidden_displays: c.hidden_displays.clone(),
             theme: c.theme.clone(),
             show_tabs: c.show_tabs,
+            compact_related_windows: c.compact_related_windows,
             show_hidden: c.show_hidden,
             discord_hidden: c.discord_hidden,
             all_displays: c.all_displays,
@@ -1014,11 +1486,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             if let Some(b) = item.button(MainThreadMarker::new().unwrap()) {
                 b.setImage(Some(&brand::status_icon()));
                 b.setToolTip(Some(&NSString::from_str("Rowla — Preferences")));
-                // SAFETY: NSStatusBarButton supports the NSAccessibility label selector.
-                unsafe {
-                    let _: () =
-                        msg_send![&*b, setAccessibilityLabel: &*NSString::from_str("Rowla")];
-                }
+                b.setAccessibilityLabel(Some(&NSString::from_str("Rowla")));
                 unsafe {
                     b.setTarget(Some(s.delegate()));
                     b.setAction(Some(sel!(statusAction:)));
@@ -1032,11 +1500,11 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         }
         s.dirty = false;
     }
-    let (c, windows, positions, focused_id) = {
+    let (c, snapshot, positions, focused_id) = {
         let s = state.borrow();
         (
             BarSettings::from(&s.config),
-            s.snapshot.windows.clone(),
+            s.snapshot.clone(),
             s.order
                 .iter()
                 .enumerate()
@@ -1045,17 +1513,18 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             s.focused_id(),
         )
     };
+    let windows = &snapshot.windows;
     let mut open_apps: HashSet<&str> = windows.iter().map(|w| w.bundle.as_str()).collect();
-    let pins: Vec<_> = c
+    let pins = c
         .pins
         .iter()
-        .filter(|pin| !open_apps.contains(pin.bundle.as_str()))
-        .collect();
+        .filter(|pin| !open_apps.contains(pin.bundle.as_str()));
+    let pin_count = pins.clone().count();
     let mut eligible: Vec<_> = windows
         .iter()
         .filter(|w| {
             w.on_space
-                && (c.show_tabs || !w.tabbed_hidden)
+                && (c.compact_related_windows || c.show_tabs || !w.tabbed_hidden)
                 && !c.blacklist.contains(&w.bundle)
                 && (c.show_hidden || !w.hidden)
                 && !(c.discord_hidden && w.bundle == "com.hnc.Discord" && w.hidden)
@@ -1099,11 +1568,25 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         if p.backgroundColor() != background {
             p.setBackgroundColor(Some(&background));
         }
-        let mut tasks: Vec<&Window> = eligible
+        let tasks = eligible
             .iter()
             .copied()
-            .filter(|w| c.all_displays || window_on_display(w, f, top))
-            .collect();
+            .filter(|w| c.all_displays || window_on_display(w, f, top));
+        let hidden = {
+            let s = state.borrow();
+            s.hidden_now.contains(&d)
+                || c.hidden_displays.contains(&d)
+                || (c.main_only && d != main_id)
+                || tasks
+                    .clone()
+                    .any(|w| w.focused && w.fullscreen && window_on_display(w, f, top))
+        };
+        if hidden {
+            p.orderOut(None);
+            state.borrow_mut().bars[i].buttons = old;
+            continue;
+        }
+        let mut tasks: Vec<&Window> = tasks.collect();
         if c.group_by_app {
             let mut apps = HashMap::new();
             for w in &tasks {
@@ -1112,35 +1595,45 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             }
             tasks.sort_by_cached_key(|w| apps[w.bundle.as_str()]);
         }
-        let hidden = {
-            let s = state.borrow();
-            s.hidden_now.contains(&d)
-                || c.hidden_displays.contains(&d)
-                || (c.main_only && d != main_id)
-                || tasks
-                    .iter()
-                    .any(|w| w.focused && w.fullscreen && window_on_display(w, f, top))
+        let mut groups = if c.compact_related_windows {
+            crate::related_windows::groups(&tasks)
+        } else {
+            tasks
+                .iter()
+                .map(|w| crate::related_windows::Group {
+                    main: w,
+                    children: Vec::new(),
+                })
+                .collect()
         };
-        if hidden {
-            p.orderOut(None);
-            state.borrow_mut().bars[i].buttons = old;
-            continue;
-        }
+        groups.retain(|g| c.show_tabs || !g.main.tabbed_hidden);
         // Reserve once for this redraw. Hidden bars keep their existing map.
-        let mut buttons = HashMap::with_capacity(tasks.len() + pins.len() + 5);
-        let mut fixed_children = Vec::with_capacity(pins.len() + 6);
+        let mut buttons = HashMap::with_capacity(tasks.len() + pin_count + 5);
+        let mut fixed_children = Vec::with_capacity(pin_count + 6);
         let mut task_children = Vec::with_capacity(tasks.len());
         let iw = h + 4.0;
         let sort_width = if c.show_sort { iw } else { 0.0 };
-        let fixed = (pins.len() + usize::from(c.show_start)) as f64 * iw + sort_width;
+        let fixed = (pin_count + usize::from(c.show_start)) as f64 * iw + sort_width;
+        let has_bubbles = c.compact_related_windows
+            && groups
+                .iter()
+                .any(|g| !g.children.is_empty() || g.main.tab_count > 1);
         let tw = if c.show_titles {
-            ((f.size.width - fixed - 8.0) / tasks.len().max(1) as f64)
-                .clamp(48.0, c.max_width * c.scale / 100.0)
+            ((f.size.width - fixed - 8.0) / groups.len().max(1) as f64).clamp(
+                if has_bubbles {
+                    54.0 * c.scale / 100.0
+                } else {
+                    48.0
+                },
+                c.max_width * c.scale / 100.0,
+            )
+        } else if has_bubbles {
+            iw + 24.0 * c.scale / 100.0
         } else {
             iw
         };
         let mut x = if c.center {
-            ((f.size.width - fixed - tw * tasks.len() as f64) / 2.0).max(0.0)
+            ((f.size.width - fixed - tw * groups.len() as f64) / 2.0).max(0.0)
         } else {
             0.0
         };
@@ -1171,7 +1664,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             buttons.insert(Action::Sort, b);
             x += sort_width;
         }
-        for pin in &pins {
+        for pin in pins.clone() {
             let b = reuse_button(
                 state,
                 &mut old,
@@ -1198,7 +1691,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             buttons.insert(b.ivars().action.clone(), b);
         }
         let available = (f.size.width - x).max(1.0);
-        let overflow = tw * tasks.len() as f64 > available;
+        let overflow = tw * groups.len() as f64 > available;
         let arrow_width = if overflow {
             h.min(available / 3.0)
         } else {
@@ -1213,7 +1706,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         if scroll.frame() != viewport {
             scroll.setFrame(viewport);
         }
-        let task_size = NSSize::new((tw * tasks.len() as f64).max(viewport.size.width), h);
+        let task_size = NSSize::new((tw * groups.len() as f64).max(viewport.size.width), h);
         if task_root.frame().size != task_size {
             task_root.setFrameSize(task_size);
         }
@@ -1237,16 +1730,19 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                     title,
                     rect(at, 0.0, arrow_width, h),
                 );
-                unsafe {
-                    let _: () = msg_send![&*b,setAccessibilityLabel:&*NSString::from_str(if right{"Show later windows"}else{"Show earlier windows"})];
-                }
+                b.setAccessibilityLabel(Some(&NSString::from_str(if right {
+                    "Show later windows"
+                } else {
+                    "Show earlier windows"
+                })));
                 fixed_children.push(as_view(&b));
                 buttons.insert(b.ivars().action.clone(), b);
             }
         }
         fixed_children.push(scroll.clone().into_super().into_super());
         x = 0.0;
-        for w in tasks {
+        for group in groups {
+            let w = group.main;
             let title = if !c.show_titles {
                 std::borrow::Cow::Borrowed("")
             } else {
@@ -1281,16 +1777,16 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 &title,
                 rect(x, 0.0, tw, h),
             );
-            set_tooltip(
-                &b,
-                &[
-                    &w.app,
-                    " — ",
-                    &w.title,
-                    "\n⌘W while hovering closes this window",
-                ],
+            b.set_window_focus(
+                focused_id == Some(w.id) || group.children.iter().any(|w| focused_id == Some(w.id)),
+                c.font_size,
             );
-            b.set_window_focus(focused_id == Some(w.id), c.font_size);
+            let mut ids = b.ivars().related_ids.borrow_mut();
+            if !ids.iter().copied().eq(group.children.iter().map(|w| w.id)) {
+                ids.clear();
+                ids.extend(group.children.iter().map(|w| w.id));
+            }
+            drop(ids);
             let position = if c.show_titles {
                 NSCellImagePosition::ImageLeft
             } else {
@@ -1300,6 +1796,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 b.setImagePosition(position);
             }
             set_app_icon(state, &b, &w.bundle, &w.path);
+            chrome_profiles::apply(state, &b, w);
             let alpha = if w.minimized || w.hidden { 0.65 } else { 1.0 };
             if b.alphaValue() != alpha {
                 b.setAlphaValue(alpha);
@@ -1323,6 +1820,22 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             }
             set_badge(state, &b, &w.bundle);
             task_children.push(as_view(&b));
+            let reserved = if c.compact_related_windows {
+                related::render_bubbles(
+                    state,
+                    &group,
+                    rect(x, 0.0, tw, h),
+                    focused_id,
+                    &mut old,
+                    &mut buttons,
+                    &mut task_children,
+                )
+            } else {
+                0.0
+            };
+            if b.ivars().reserved_width.replace(reserved) != reserved {
+                NSView::setNeedsDisplay(&b, true);
+            }
             buttons.insert(b.ivars().action.clone(), b);
             x += tw;
             if state.borrow().gui_smoke.is_none()
@@ -1401,14 +1914,29 @@ fn activate_window(state: &Shared, id: u32) {
         {
             return;
         }
+        s.pending_tab = None;
         let previous = s.focused_id();
         s.pending_focus = Some(active_feedback::PendingFocus::new(id, started));
         s.bars
             .iter()
             .flat_map(|bar| bar.buttons.values())
             .filter_map(|button| match button.ivars().action {
-                Action::Window(window) if window == id || Some(window) == previous => {
-                    Some((button.clone(), window == id, s.config.font_size))
+                Action::Window(window) | Action::Bubble(window) => {
+                    let related = button.ivars().related_ids.borrow();
+                    let focused = window == id || related.contains(&id);
+                    let was_focused = Some(window) == previous
+                        || previous.is_some_and(|id| related.contains(&id));
+                    (focused || was_focused).then(|| {
+                        (
+                            button.clone(),
+                            focused,
+                            if matches!(button.ivars().action, Action::Bubble(_)) {
+                                9.0 * s.config.scale / 100.0
+                            } else {
+                                s.config.font_size
+                            },
+                        )
+                    })
                 }
                 _ => None,
             })
@@ -1508,7 +2036,21 @@ fn dispatch(state: &Shared, a: Action) {
                 state.borrow().command(Command::Close(id));
             }
         }
-        Action::Raise(id) => {
+        Action::RelatedMore(id) => related::show_more(state, id),
+        Action::Tab(id, index) => related::select_tab(state, id, index),
+        Action::CloseTab(id, index) => {
+            let s = state.borrow();
+            if let Some(tab) = s
+                .snapshot
+                .windows
+                .iter()
+                .find(|w| w.id == id)
+                .and_then(|w| w.tabs.iter().find(|t| t.id == index))
+            {
+                s.command(Command::CloseTab(tab.id));
+            }
+        }
+        Action::Raise(id) | Action::Bubble(id) => {
             activate_window(state, id);
         }
         Action::Preview(id) => {
@@ -1517,7 +2059,7 @@ fn dispatch(state: &Shared, a: Action) {
                 s.bars.iter().find_map(|b| {
                     b.buttons
                         .values()
-                        .find(|v| matches!(v.ivars().action,Action::Window(w) if w==id))
+                        .find(|v| matches!(v.ivars().action,Action::Window(w)|Action::Bubble(w) if w==id))
                         .map(|v| {
                             b.panel
                                 .convertRectToScreen(v.convertRect_toView(v.bounds(), None))
@@ -1561,9 +2103,7 @@ fn dispatch(state: &Shared, a: Action) {
             state.borrow().command(Command::Launch(b.clone(), a));
             let mut s = state.borrow_mut();
             s.config.remember(&b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             if let Some(m) = s.start.take() {
                 m.panel.close();
             }
@@ -1602,17 +2142,13 @@ fn dispatch(state: &Shared, a: Action) {
                     action: "launchOrActivateApp".into(),
                 });
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Unpin(b) => {
             let mut s = state.borrow_mut();
             s.config.pins.retain(|p| p.bundle != b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Blacklist(b) => {
@@ -1620,9 +2156,7 @@ fn dispatch(state: &Shared, a: Action) {
             if !s.config.blacklist.contains(&b) {
                 s.config.blacklist.push(b);
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let picker = s
                 .start
@@ -1639,9 +2173,7 @@ fn dispatch(state: &Shared, a: Action) {
         Action::RemoveBlacklist(b) => {
             let mut s = state.borrow_mut();
             s.config.blacklist.retain(|p| p != &b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             drop(s);
             show_preferences(state, 4);
@@ -1651,9 +2183,7 @@ fn dispatch(state: &Shared, a: Action) {
             if let Some(p) = s.config.pins.iter_mut().find(|p| p.bundle == b) {
                 p.action = a;
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
         }
         Action::HideBar(d, now) => {
             let mut s = state.borrow_mut();
@@ -1663,9 +2193,7 @@ fn dispatch(state: &Shared, a: Action) {
                 if !s.config.hidden_displays.contains(&d) {
                     s.config.hidden_displays.push(d);
                 }
-                if let Err(e) = s.config.save() {
-                    s.error = e;
-                }
+                s.save_config();
             }
             s.dirty = true;
         }
@@ -1673,11 +2201,7 @@ fn dispatch(state: &Shared, a: Action) {
             let mut s = state.borrow_mut();
             s.hidden_now.clear();
             s.config.hidden_displays.clear();
-            if s.gui_smoke.is_none()
-                && let Err(e) = s.config.save()
-            {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::HideBars => {
@@ -1685,11 +2209,7 @@ fn dispatch(state: &Shared, a: Action) {
             s.config.hidden_displays = screens().iter().map(|(id, _)| *id).collect();
             // Keep a restoration control even if the user previously hid the icon.
             s.config.show_menubar = true;
-            if s.gui_smoke.is_none()
-                && let Err(error) = s.config.save()
-            {
-                s.error = error;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Toggle(k) => {
@@ -1705,9 +2225,7 @@ fn dispatch(state: &Shared, a: Action) {
             {
                 s.error = e;
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let page = s.preferences.as_ref().map(|p| p.page);
             drop(s);
@@ -1745,11 +2263,7 @@ fn dispatch(state: &Shared, a: Action) {
                 }
                 .into();
             }
-            if s.gui_smoke.is_none()
-                && let Err(e) = s.config.save()
-            {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let page = s.preferences.as_ref().map(|p| p.page);
             drop(s);
@@ -1779,9 +2293,7 @@ fn dispatch(state: &Shared, a: Action) {
             s.config.update_policy = policy;
             s.config.local_crash_reports = crash;
             let _ = s.tx.try_send(Command::Dock(s.config.fully_hide_dock));
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             drop(s);
             show_preferences(state, 0);
@@ -1822,7 +2334,7 @@ fn menu_item(s: &Shared, m: &NSMenu, t: &str, a: Action) {
 }
 fn context_menu(s: &Shared, a: Option<&Action>) -> Retained<NSMenu> {
     let m = NSMenu::new(MainThreadMarker::new().unwrap());
-    if let Some(Action::Window(id)) = a {
+    if let Some(Action::Window(id) | Action::Bubble(id)) = a {
         let w = s
             .borrow()
             .snapshot
@@ -1845,6 +2357,9 @@ fn context_menu(s: &Shared, a: Option<&Action>) -> Retained<NSMenu> {
                 menu_item(s, &m, t, a);
             }
         }
+    } else if let Some(Action::Tab(id, index)) = a {
+        menu_item(s, &m, "Select Tab", Action::Tab(*id, *index));
+        menu_item(s, &m, "Close Tab", Action::CloseTab(*id, *index));
     } else if let Some(Action::Pin(b, a)) = a {
         menu_item(s, &m, "Open Application", Action::Pin(b.clone(), a.clone()));
         menu_item(
@@ -1928,7 +2443,9 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
         .and_then(|b| {
             b.buttons.values().find(|v| {
                 let r = v.convertRect_toView(v.bounds(), None);
-                x >= r.origin.x && x < r.origin.x + r.size.width
+                matches!(v.ivars().action, Action::Window(_) | Action::Pin(..))
+                    && x >= r.origin.x
+                    && x < r.origin.x + r.size.width
             })
         })
         .map(|b| b.ivars().action.clone());
@@ -1940,8 +2457,24 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
                 s.order.iter().position(|id| id == from),
                 s.order.iter().position(|id| *id == to),
             ) {
-                let v = s.order.remove(a);
-                s.order.insert(b, v);
+                let mut moving = vec![*from];
+                if let Some(button) = s
+                    .bars
+                    .iter()
+                    .find_map(|bar| bar.buttons.get(&Action::Window(*from)))
+                {
+                    moving.extend(button.ivars().related_ids.borrow().iter().copied());
+                }
+                let target = s.order[b];
+                let after = a < b;
+                s.order.retain(|id| !moving.contains(id));
+                let at = s
+                    .order
+                    .iter()
+                    .position(|id| *id == target)
+                    .unwrap_or(s.order.len());
+                let at = (at + usize::from(after)).min(s.order.len());
+                s.order.splice(at..at, moving);
                 s.dirty = true;
                 return true;
             }
@@ -1955,9 +2488,7 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
             ) {
                 let p = s.config.pins.remove(a);
                 s.config.pins.insert(b, p);
-                if let Err(e) = s.config.save() {
-                    s.error = e;
-                }
+                s.save_config();
                 s.dirty = true;
                 return true;
             }
@@ -2392,8 +2923,10 @@ fn bool_setting<'a>(c: &'a mut Config, k: &str) -> Option<&'a mut bool> {
         "middle_closes" => &mut c.middle_closes,
         "show_hidden" => &mut c.show_hidden,
         "show_badges" => &mut c.show_badges,
+        "chrome_profile_badges" => &mut c.chrome_profile_badges,
         "show_all_spaces" => &mut c.show_all_spaces,
         "show_tabs" => &mut c.show_tabs,
+        "compact_related_windows" => &mut c.compact_related_windows,
         "group_by_app" => &mut c.group_by_app,
         "task_dragging" => &mut c.task_dragging,
         "pin_dragging" => &mut c.pin_dragging,
@@ -2468,9 +3001,7 @@ fn refresh_permission_labels(state: &Shared) {
         };
         let title = NSString::from_str(&title);
         button.setTitle(&title);
-        unsafe {
-            let _: () = msg_send![button, setAccessibilityLabel: &*title];
-        }
+        button.setAccessibilityLabel(Some(&title));
     }
 }
 fn show_start(state: &Shared, display: u32) {
@@ -2494,6 +3025,7 @@ fn persist_metrics(s: &State) {
     let (frames, sessions, live, running) = crate::capture::counts();
     let mut d = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"accessibility":s.snapshot.trusted,"screen_recording":s.snapshot.screen_allowed,"hover_close_enabled":s.hover_close.as_ref().is_some_and(hover_close::Service::enabled),"login_status":platform::login_status(),"windows":s.snapshot.windows.len(),"icons":s.icons.len(),"order_entries":s.order.len(),"displays":s.bars.len(),"installed_apps":s.apps.len(),"captures":s.captures,"capture_errors":s.capture_errors,"capture_pending":s.capture_busy,"scan_ms":s.snapshot.scan_ms,"capabilities":s.snapshot.capabilities,"discovery":s.snapshot.discovery,"cf_live":cf_live,"cf_peak":cf_peak,"stream_frames":frames,"stream_sessions":sessions,"stream_live":live,"stream_running":running,"capture_stop_errors":crate::capture::stop_errors(),"capture_native_state_uncertain":crate::capture::native_uncertain(),"performance":s.performance.json(),"preview_cache_entries":s.preview_cache.len(),"interaction_timer_active":s.interaction_timer.is_some(),"error":s.error});
     d["capture_features"] = crate::capture::diagnostics();
+    d["chrome_profiles"] = s.profile_badges.diagnostics();
     d["capture_mode"] = serde_json::to_value(s.config.capture_mode).unwrap();
     d["minimum_macos"] = "15.2".into();
     let _ = std::fs::write(
@@ -2600,8 +3132,16 @@ fn build_preferences(state: &Shared, page: usize) {
             ("middle_closes", "Middle-click closes window"),
             ("show_hidden", "Show hidden windows"),
             ("show_badges", "Show app notification badges"),
+            ("chrome_profile_badges", "Show Chrome profile badges"),
             ("show_all_spaces", "Indicate apps assigned to all Spaces"),
-            ("show_tabs", "Treat standard tabs as separate windows"),
+            (
+                "compact_related_windows",
+                "Show related windows as compact bubbles",
+            ),
+            (
+                "show_tabs",
+                "Show inactive native tabs as separate tiles when ungrouped",
+            ),
             ("group_by_app", "Group tasks by app chronologically"),
             ("task_dragging", "Reorder tasks by dragging"),
             ("pin_dragging", "Reorder pinned apps by dragging"),
@@ -3312,12 +3852,14 @@ fn run_mode(
             last: Instant::now(),
         }),
         config,
-        snapshot: Snapshot::default(),
+        snapshot: Rc::default(),
         pending_focus: None,
+        pending_tab: None,
         pending_system_sort: false,
         received_snapshot: false,
         bars: vec![],
         icons: HashMap::new(),
+        profile_badges: chrome_profiles::Service::default(),
         order: vec![],
         activity: crate::window_order::Activity::default(),
         sort_order_error: None,

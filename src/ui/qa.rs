@@ -62,8 +62,8 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         s.config.main_only = false;
         s.config.center = false;
         s.config.resize_overlap = false;
-        s.snapshot.trusted = true;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot).trusted = true;
+        Rc::make_mut(&mut s.snapshot)
             .badges
             .insert("com.apple.TextEdit".into(), "1".into());
     }
@@ -78,9 +78,10 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         eprintln!("Native UI check: {windows} fixture buttons");
         {
             let mut s = state.borrow_mut();
-            s.snapshot.windows = (1..=windows)
+            Rc::make_mut(&mut s.snapshot).windows = (1..=windows)
                 .map(|id| Window {
                     id: id as u32,
+                    pid: 1000 + id as i32,
                     bundle: "com.apple.TextEdit".into(),
                     app: "Taskbar QA".into(),
                     title: format!(
@@ -103,7 +104,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         state.borrow_mut().performance.render = Timing::default();
         for cycle in 0..count {
             let mut s = state.borrow_mut();
-            for (i, w) in s.snapshot.windows.iter_mut().enumerate() {
+            for (i, w) in Rc::make_mut(&mut s.snapshot).windows.iter_mut().enumerate() {
                 w.focused = i == cycle % windows;
                 w.x = (cycle % 2) as f64;
             }
@@ -213,7 +214,9 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
     let hover_close_ignores_controls = {
         let s = state.borrow();
         let bar = &s.bars[0];
-        bar.buttons
+        bar.panel.orderFrontRegardless();
+        let ignored = bar
+            .buttons
             .values()
             .filter(|b| !matches!(b.ivars().action, Action::Window(_)))
             .all(|b| {
@@ -221,14 +224,27 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
                     NSPoint::new(b.bounds().size.width / 2.0, b.bounds().size.height / 2.0),
                     None,
                 );
-                hover_close::tile_at(bar, bar.panel.convertPointToScreen(p)).is_none()
-            })
+                [13, 12].into_iter().all(|key| {
+                    hover_close::action_at(
+                        &s,
+                        bar.panel.convertPointToScreen(p),
+                        bar.panel.windowNumber(),
+                        key,
+                    )
+                    .is_none()
+                })
+            });
+        bar.panel.orderOut(None);
+        ignored
     };
     let pin_checks = check_pins(state);
     let start_search = check_start_search(state);
     let snapshot_checks = check_snapshot_updates(state, count);
     eprintln!("Native UI check: system features");
     let system_features = check_system_features(state);
+    let related_windows = check_related_windows(state);
+    let chrome_profiles = check_chrome_profiles(state);
+    let native_tab_order = check_native_tab_order(state);
     let passed = misses == 0
         && hits == 624
         && hover_close_hits == hits
@@ -246,6 +262,9 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         && start_search["passed"] == true
         && snapshot_checks["passed"] == true
         && system_features["passed"] == true
+        && related_windows["passed"] == true
+        && chrome_profiles["passed"] == true
+        && native_tab_order["passed"] == true
         && cases.iter().all(|c| {
             c["windows"] == c["visible_buttons"]
                 && c["windows"] == c["single_line_buttons"]
@@ -256,9 +275,564 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         });
     println!(
         "{}",
-        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"miss_details":miss_details,"cases":cases})
+        serde_json::json!({"completed":true,"passed":passed,"cycles_per_case":count,"hit_successes":hits,"hit_misses":misses,"hover_close_hits":hover_close_hits,"hover_close_ignores_controls":hover_close_ignores_controls,"active_feedback_checks":active_feedback_checks,"active_feedback_failures":active_feedback_failures,"presentation":presentation_checks,"preview_close_compact":close_compact,"preview_frame":preview_frame_checks,"minimized_preview":minimized_preview,"cursor_and_clicks":cursor_and_clicks,"focus_clicks":focus_clicks,"sort":sort_checks,"pins":pin_checks,"start_search":start_search,"snapshot_updates":snapshot_checks,"system_features":system_features,"related_windows":related_windows,"chrome_profiles":chrome_profiles,"native_tab_order":native_tab_order,"miss_details":miss_details,"cases":cases})
     );
     passed
+}
+
+fn check_native_tab_order(state: &Shared) -> serde_json::Value {
+    let saved = {
+        let s = state.borrow();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            s.known_spaces.clone(),
+        )
+    };
+    let owner = |id| Window {
+        id,
+        pid: 42,
+        app: "Native Tab QA".into(),
+        bundle: "qa.native-tabs".into(),
+        on_space: true,
+        focused: true,
+        native_tabs: true,
+        tab_count: 2,
+        width: 600.0,
+        height: 400.0,
+        title: format!("Terminal {id}"),
+        tabs: [101, 102]
+            .into_iter()
+            .map(|token| crate::models::WindowTab {
+                id: token,
+                title: format!("Tab {token}"),
+                selected: token == if id == 10 { 101 } else { 102 },
+                resolved: true,
+            })
+            .collect(),
+        ..Window::default()
+    };
+    let neighbor = |id| Window {
+        id,
+        pid: id as i32,
+        on_space: true,
+        app: "Neighbor QA".into(),
+        bundle: format!("qa.neighbor.{id}"),
+        width: 600.0,
+        height: 400.0,
+        ..Window::default()
+    };
+    let snapshot = |id| Snapshot {
+        trusted: true,
+        screen_allowed: true,
+        windows: vec![neighbor(1), owner(id), neighbor(3)],
+        ..Snapshot::default()
+    };
+    let mut stable = true;
+    let mut feedback = true;
+    for reset in [false, true] {
+        {
+            let mut s = state.borrow_mut();
+            s.config.compact_related_windows = true;
+            s.config.show_tabs = true;
+            s.config.main_only = false;
+            s.config.all_displays = true;
+            s.config.blacklist.clear();
+            s.config.hidden_displays.clear();
+            s.hidden_now.clear();
+            s.config.reset_space_order = reset;
+            s.snapshot = Rc::new(snapshot(10));
+            s.order = vec![3, 10, 1];
+            s.known_spaces = HashMap::from([(3, true), (10, true), (1, true)]);
+            s.pending_focus = None;
+            s.pending_tab = None;
+        }
+        render(state);
+        let frames: Vec<_> = [3, 10, 1]
+            .iter()
+            .map(|id| state.borrow().bars[0].buttons[&Action::Window(*id)].frame())
+            .collect();
+        for cycle in 0..12 {
+            let old = if cycle % 2 == 0 { 10 } else { 11 };
+            let next = if old == 10 { 11 } else { 10 };
+            let token = if next == 10 { 101 } else { 102 };
+            related::select_tab(state, old, token);
+            feedback &= state.borrow().bars[0].buttons[&Action::Tab(old, token)]
+                .ivars()
+                .window_style
+                .get()
+                .is_some_and(|s| s.focused);
+            apply_snapshot(&mut state.borrow_mut(), snapshot(next));
+            render(state);
+            let s = state.borrow();
+            stable &= s.order == [3, next, 1]
+                && s.known_spaces.len() == 3
+                && [3, next, 1]
+                    .iter()
+                    .zip(&frames)
+                    .all(|(id, frame)| s.bars[0].buttons[&Action::Window(*id)].frame() == *frame)
+                && s.bars[0].buttons[&Action::Tab(next, token)]
+                    .ivars()
+                    .window_style
+                    .get()
+                    .is_some_and(|s| s.focused);
+        }
+    }
+    {
+        let mut s = state.borrow_mut();
+        (s.config, s.snapshot, s.order, s.known_spaces) = saved;
+        s.pending_focus = None;
+        s.pending_tab = None;
+    }
+    render(state);
+    serde_json::json!({"passed":stable&&feedback,"transitions":24,"manual_slot_and_neighbor_frames":stable,"instant_tab_feedback":feedback})
+}
+
+fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
+    use crate::chrome_profiles::{AVATAR_SIDE, Browser, Catalog, Profile};
+    let saved = {
+        let mut s = state.borrow_mut();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            std::mem::take(&mut s.profile_badges),
+        )
+    };
+    let profile = |folder: &str, name: &str, color: u32, picture: bool| Profile {
+        folder: folder.into(),
+        name: name.into(),
+        color,
+        picture_file: None,
+        pixels: picture.then(|| {
+            [color as u8, (color >> 8) as u8, (color >> 16) as u8, 255]
+                .repeat(AVATAR_SIDE * AVATAR_SIDE)
+                .into()
+        }),
+    };
+    let cache_lifecycle = {
+        let cases = [
+            (
+                Browser::Stable,
+                "com.google.Chrome",
+                "QA - Google Chrome - Alex",
+            ),
+            (
+                Browser::Beta,
+                "com.google.Chrome.beta",
+                "QA - Google Chrome Beta - Alex",
+            ),
+            (
+                Browser::Dev,
+                "com.google.Chrome.dev",
+                "QA - Google Chrome Dev - Alex",
+            ),
+            (
+                Browser::Canary,
+                "com.google.Chrome.canary",
+                "QA - Google Chrome Canary - Alex",
+            ),
+        ];
+        let mut catalogs: Vec<_> = cases
+            .iter()
+            .map(|(browser, _, _)| Catalog {
+                browser: *browser,
+                profiles: vec![profile("Default", "Alex", 0xff3478bc, false)],
+            })
+            .collect();
+        let mut cache = chrome_profiles::Service::default();
+        cache.install(catalogs.clone());
+        let originals: Vec<_> = cases
+            .iter()
+            .map(|(_, bundle, title)| cache.badge(bundle, title).unwrap())
+            .collect();
+        let separate = originals.iter().enumerate().all(|(i, (image, name))| {
+            name.as_ref() == "Alex"
+                && originals[..i]
+                    .iter()
+                    .all(|(other, _)| !std::ptr::eq(&**image, &**other))
+        });
+        catalogs.reverse();
+        cache.install(catalogs.clone());
+        let shared = cases
+            .iter()
+            .zip(&originals)
+            .all(|((_, bundle, title), (image, name))| {
+                let (next_image, next_name) = cache.badge(bundle, title).unwrap();
+                std::ptr::eq(&**image, &*next_image) && std::sync::Arc::ptr_eq(name, &next_name)
+            });
+        catalogs[0].profiles[0].color ^= 1;
+        cache.install(catalogs);
+        let updated = cache.badge(cases[3].1, cases[3].2).unwrap();
+        let replaced = !std::ptr::eq(&*updated.0, &*originals[3].0);
+        let name = std::sync::Arc::downgrade(&originals[0].1);
+        cache.install(vec![]);
+        drop(originals);
+        drop(updated);
+        separate
+            && shared
+            && replaced
+            && cache.diagnostics()["cached_badges"] == 0
+            && name.upgrade().is_none()
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.chrome_profile_badges = true;
+        s.config.compact_related_windows = false;
+        s.config.show_titles = true;
+        s.config.scale = 100.0;
+        s.config.max_width = 235.0;
+        s.config.main_only = false;
+        s.config.blacklist.clear();
+        s.config.hidden_displays.clear();
+        s.hidden_now.clear();
+        s.config.show_tabs = true;
+        s.profile_badges.install(vec![Catalog {
+            browser: Browser::Stable,
+            profiles: vec![
+                profile("Default", "Alex", 0xffc44862, true),
+                profile("Profile 1", "Alex (Work)", 0xff3478bc, true),
+                profile("Profile 2", "School", 0xff56843d, false),
+            ],
+        }]);
+        Rc::make_mut(&mut s.snapshot).windows = (1..=6)
+            .map(|id| Window {
+                id,
+                pid: 1,
+                app: "Google Chrome".into(),
+                bundle: "com.google.Chrome".into(),
+                path: "/Applications/Google Chrome.app".into(),
+                title: match id {
+                    1 => "Home - Google Chrome - Alex",
+                    2 => "Work - Google Chrome - Alex (Work)",
+                    3 => "Minimized - Google Chrome - Alex",
+                    4 => "School - Google Chrome - School",
+                    5 => "Private - Google Chrome (Incognito)",
+                    _ => "Unknown - Google Chrome - Other",
+                }
+                .into(),
+                minimized: id == 3,
+                on_space: true,
+                width: 600.0,
+                height: 400.0,
+                ..Window::default()
+            })
+            .collect();
+        s.order = (1..=6).collect();
+    }
+    render(state);
+    let buttons = || {
+        let s = state.borrow();
+        (1..=6)
+            .map(|id| s.bars[0].buttons[&Action::Window(id)].clone())
+            .collect::<Vec<_>>()
+    };
+    let bs = buttons();
+    let image = |b: &ActionButton| {
+        b.ivars()
+            .profile_badge
+            .borrow()
+            .as_ref()
+            .map(|i| std::ptr::from_ref(&**i))
+    };
+    let mapped = bs[..4].iter().all(|b| image(b).is_some())
+        && bs[4..].iter().all(|b| image(b).is_none())
+        && image(&bs[0]) == image(&bs[2])
+        && image(&bs[0]) != image(&bs[1])
+        && bs[1]
+            .toolTip()
+            .unwrap()
+            .to_string()
+            .contains("Chrome profile: Alex (Work)");
+    let created = state.borrow().performance.buttons_created;
+    for _ in 0..100 {
+        render(state);
+    }
+    let reused = created == state.borrow().performance.buttons_created
+        && buttons()
+            .iter()
+            .zip(&bs)
+            .all(|(a, b)| std::ptr::eq(&**a, &**b) && image(a) == image(b));
+    let bounds_ok = |b: &ActionButton| {
+        chrome_profiles::frame(b).is_some_and(|f| {
+            f.origin.x >= 0.0
+                && f.origin.y >= 0.0
+                && f.origin.x + f.size.width <= b.bounds().size.width
+                && f.origin.y + f.size.height <= b.bounds().size.height
+                && f.size.width <= 12.0
+        })
+    };
+    let bounds = bs[..4].iter().all(|b| bounds_ok(b));
+    let root = state.borrow().bars[0].root.clone();
+    let panel = state.borrow().bars[0].panel.clone();
+    let f = chrome_profiles::frame(&bs[0]).unwrap();
+    let point = bs[0].convertPoint_toView(
+        NSPoint::new(
+            f.origin.x + f.size.width / 2.0,
+            f.origin.y + f.size.height / 2.0,
+        ),
+        None,
+    );
+    let hit = root
+        .hitTest(root.convertPoint_fromView(point, None))
+        .is_some_and(|v| std::ptr::eq(&*v, &*bs[0] as &NSView));
+    let close_target =
+        hover_close::tile_at(&state.borrow().bars[0], panel.convertPointToScreen(point)) == Some(1);
+    let screenshot = render_fixture_view(&root, "chrome-profile-badges.png");
+    state.borrow_mut().config.show_titles = false;
+    state.borrow_mut().config.scale = 60.0;
+    render(state);
+    let scaled_height = state.borrow().bars[0].panel.frame().size.height;
+    // AppKit rounds window frames to display pixels at fractional scales.
+    let narrow = buttons()[..4].iter().all(|b| bounds_ok(b)) && (scaled_height - 19.2).abs() < 1.0;
+    state.borrow_mut().config.chrome_profile_badges = false;
+    render(state);
+    let disabled = buttons().iter().all(|b| image(b).is_none());
+    {
+        let mut s = state.borrow_mut();
+        (s.config, s.snapshot, s.order, s.profile_badges) = saved;
+    }
+    render(state);
+    serde_json::json!({"passed":cache_lifecycle&&mapped&&reused&&bounds&&hit&&close_target&&screenshot&&narrow&&disabled,
+        "cache_refresh_and_release":cache_lifecycle,
+        "profile_mapping":mapped,"shared_images_and_controls":reused,"badge_bounds":bounds,
+        "badge_hit_target":hit,"hover_close_target":close_target,"synthetic_screenshot":screenshot,
+        "icon_only_scaled_bounds":narrow,"scaled_panel_height":scaled_height,"disabled_clears_images":disabled})
+}
+
+fn check_related_windows(state: &Shared) -> serde_json::Value {
+    let saved = {
+        let s = state.borrow();
+        (
+            s.config.clone(),
+            s.snapshot.clone(),
+            s.order.clone(),
+            s.pending_focus,
+            s.known_spaces.clone(),
+        )
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.compact_related_windows = true;
+        s.config.blacklist.clear();
+        s.config.hidden_displays.clear();
+        s.config.main_only = false;
+        s.hidden_now.clear();
+        s.config.show_tabs = true;
+        s.config.show_titles = true;
+        s.config.max_width = 200.0;
+        s.config.all_displays = true;
+        s.config.scale = 100.0;
+        s.pending_focus = None;
+        Rc::make_mut(&mut s.snapshot).windows = (1..=9)
+            .map(|id| Window {
+                id,
+                pid: 1,
+                app: "Related QA".into(),
+                bundle: "com.apple.TextEdit".into(),
+                title: if id == 1 {
+                    "Chat window".into()
+                } else {
+                    format!("Computer Use {id}")
+                },
+                subordinate: id > 1,
+                parent_id: (id > 1).then_some(1),
+                on_space: true,
+                width: if id == 1 { 600.0 } else { 200.0 },
+                height: if id == 1 { 400.0 } else { 100.0 },
+                ..Window::default()
+            })
+            .collect();
+        s.order = (1..=9).collect();
+        s.known_spaces = (1..=9).map(|id| (id, true)).collect();
+    }
+    render(state);
+    let (parent, bubble, overflow, panel, root, created) = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        (
+            b.buttons[&Action::Window(1)].clone(),
+            b.buttons[&Action::Bubble(2)].clone(),
+            b.buttons[&Action::RelatedMore(1)].clone(),
+            b.panel.clone(),
+            b.root.clone(),
+            s.performance.buttons_created,
+        )
+    };
+    let compact = state.borrow().bars[0]
+        .buttons
+        .keys()
+        .filter(|a| matches!(a, Action::Window(_)))
+        .count()
+        == 1
+        && panel.frame().size.height == 32.0
+        && bubble.frame().size == NSSize::new(18.0, 18.0)
+        && overflow.title().to_string() == "+6"
+        && parent.ivars().reserved_width.get() > 0.0;
+    let mut hit_checks = Vec::new();
+    for b in [&parent, &bubble, &overflow] {
+        let p = b.convertPoint_toView(
+            NSPoint::new(
+                if std::ptr::eq(&**b, &*parent) {
+                    5.0
+                } else {
+                    9.0
+                },
+                9.0,
+            ),
+            None,
+        );
+        let hit = root.hitTest(root.convertPoint_fromView(p, None));
+        hit_checks.push(
+            hit.as_deref()
+                .is_some_and(|hit| std::ptr::eq(hit, &**b as &NSView)),
+        );
+    }
+    let point = bubble.convertPoint_toView(NSPoint::new(9.0, 9.0), None);
+    let close_target =
+        hover_close::tile_at(&state.borrow().bars[0], panel.convertPointToScreen(point)) == Some(2);
+    bubble.mouseDown(&mouse_event(&panel, NSEventType::LeftMouseDown, point));
+    bubble.mouseUp(&mouse_event(&panel, NSEventType::LeftMouseUp, point));
+    let instant = state.borrow().focused_id() == Some(2)
+        && parent.ivars().window_style.get().is_some_and(|v| v.focused)
+        && bubble.ivars().window_style.get().is_some_and(|v| v.focused);
+    for _ in 0..100 {
+        autoreleasepool(|_| render(state));
+    }
+    let reused = state.borrow().performance.buttons_created == created;
+    let parent_frame = parent.frame();
+    let bubble_frame = bubble.frame();
+    let mut scan_stability = true;
+    for cycle in 0..21 {
+        let mut next = state.borrow().snapshot.as_ref().clone();
+        for window in &mut next.windows {
+            window.stale = cycle % 2 == 1;
+        }
+        apply_snapshot(&mut state.borrow_mut(), next);
+        render(state);
+        let s = state.borrow();
+        let buttons = &s.bars[0].buttons;
+        scan_stability &= buttons
+            .keys()
+            .filter(|a| matches!(a, Action::Window(_)))
+            .count()
+            == 1
+            && buttons
+                .get(&Action::Window(1))
+                .is_some_and(|b| std::ptr::eq(&**b, &*parent) && b.frame() == parent_frame)
+            && buttons
+                .get(&Action::Bubble(2))
+                .is_some_and(|b| std::ptr::eq(&**b, &*bubble) && b.frame() == bubble_frame)
+            && s.performance.buttons_created == created;
+    }
+    let screenshot = render_fixture_view(&root, "related-bubbles.png");
+    {
+        let mut s = state.borrow_mut();
+        s.config.scale = 60.0;
+        s.config.max_width = 60.0;
+        s.config.show_titles = false;
+    }
+    render(state);
+    let narrow = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        !b.buttons.keys().any(|a| matches!(a, Action::Bubble(_)))
+            && b.buttons[&Action::RelatedMore(1)].title().to_string() == "+8"
+            && (b.panel.frame().size.height - 19.2).abs() < 1.0
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.config.scale = 100.0;
+        s.config.max_width = 200.0;
+        s.config.show_titles = true;
+        Rc::make_mut(&mut s.snapshot)
+            .windows
+            .retain(|w| w.id == 1 || w.id == 2);
+        let main = &mut Rc::make_mut(&mut s.snapshot).windows[0];
+        main.title = "Terminal".into();
+        main.tab_count = 2;
+        main.native_tabs = true;
+        main.tabs = vec![
+            crate::models::WindowTab {
+                id: 101,
+                resolved: true,
+                title: "Build".into(),
+                selected: true,
+            },
+            crate::models::WindowTab {
+                id: 102,
+                resolved: true,
+                title: "Logs".into(),
+                selected: false,
+            },
+        ];
+        s.pending_focus = None;
+    }
+    render(state);
+    let (tab, panel, root) = {
+        let s = state.borrow();
+        let b = &s.bars[0];
+        (
+            b.buttons[&Action::Tab(1, 102)].clone(),
+            b.panel.clone(),
+            b.root.clone(),
+        )
+    };
+    let point = tab.convertPoint_toView(NSPoint::new(9.0, 9.0), None);
+    let tab_hit = root
+        .hitTest(root.convertPoint_fromView(point, None))
+        .is_some_and(|hit| std::ptr::eq(&*hit, &*tab as &NSView));
+    panel.orderFrontRegardless();
+    let tab_close = hover_close::action_at(
+        &state.borrow(),
+        panel.convertPointToScreen(point),
+        panel.windowNumber(),
+        13,
+    ) == Some(Action::CloseTab(1, 102));
+    let hover_quit = {
+        let s = state.borrow();
+        [
+            &tab,
+            &s.bars[0].buttons[&Action::Window(1)],
+            &s.bars[0].buttons[&Action::Bubble(2)],
+        ]
+        .into_iter()
+        .all(|button| {
+            let p = button.convertPoint_toView(NSPoint::new(5.0, 5.0), None);
+            let point = panel.convertPointToScreen(p);
+            hover_close::action_at(&s, point, panel.windowNumber(), 12) == Some(Action::QuitApp(1))
+                && hover_close::action_at(&s, point, -1, 12).is_none()
+        })
+    };
+    panel.orderOut(None);
+    tab.mouseDown(&mouse_event(&panel, NSEventType::LeftMouseDown, point));
+    tab.mouseUp(&mouse_event(&panel, NSEventType::LeftMouseUp, point));
+    let tab_feedback = tab.ivars().window_style.get().is_some_and(|s| s.focused)
+        && state
+            .borrow()
+            .pending_tab
+            .is_some_and(|(_, id, _)| id == 102);
+    render(state);
+    let pending_stable = state.borrow().bars[0].buttons[&Action::Tab(1, 102)]
+        .ivars()
+        .window_style
+        .get()
+        .is_some_and(|s| s.focused);
+    let native_screenshot = render_fixture_view(&root, "related-bubbles.png");
+    {
+        let mut s = state.borrow_mut();
+        (
+            s.config,
+            s.snapshot,
+            s.order,
+            s.pending_focus,
+            s.known_spaces,
+        ) = saved;
+        s.pending_tab = None;
+    }
+    render(state);
+    serde_json::json!({"passed":compact&&hit_checks.iter().all(|v|*v)&&close_target&&instant&&reused&&scan_stability&&narrow&&screenshot&&tab_hit&&tab_close&&hover_quit&&tab_feedback&&pending_stable&&native_screenshot,"compact":compact,"hit_checks":hit_checks,"hover_close_specific":close_target,"hover_quit_application":hover_quit,"instant_feedback":instant,"controls_reused":reused,"incomplete_scan_stability":scan_stability,"narrow_overflow":narrow,"native_tab_hit":tab_hit,"native_tab_close":tab_close,"native_tab_feedback":tab_feedback,"pending_feedback_stable":pending_stable,"synthetic_screenshot":native_screenshot})
 }
 
 fn check_system_features(state: &Shared) -> serde_json::Value {
@@ -473,7 +1047,11 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
     s.preview_id = None;
     s.preview_cache.clear();
     let mut cases = Vec::new();
-    for windows in [8, 32, 64, 512] {
+    for (windows, thumbnails) in [8, 32, 64, 512]
+        .into_iter()
+        .flat_map(|windows| [true, false].map(|thumbnails| (windows, thumbnails)))
+    {
+        s.config.thumbnails = thumbnails;
         s.order.clear();
         s.known_spaces.clear();
         s.activity = crate::window_order::Activity::default();
@@ -494,7 +1072,7 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
                 .collect(),
             ..Snapshot::default()
         };
-        s.snapshot = Snapshot::default();
+        s.snapshot = Rc::default();
         apply_snapshot(&mut s, snapshot.clone());
         let order = s.order.clone();
         let mut timing = Timing::default();
@@ -525,21 +1103,29 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
             changed_timing.record(start.elapsed());
             correct &= !permission_change && s.dirty && s.order == order;
         }
-        cases.push(serde_json::json!({"windows":windows,"passed":correct,"unchanged_snapshot":timing.json(),"changed_snapshot":changed_timing.json()}));
+        cases.push(serde_json::json!({"windows":windows,"thumbnails":thumbnails,"passed":correct,"unchanged_snapshot":timing.json(),"changed_snapshot":changed_timing.json()}));
     }
-    let mut next = s.snapshot.clone();
+    s.config.thumbnails = true;
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.truncate(3);
     apply_snapshot(&mut s, next);
     s.order = vec![3, 1, 2];
     s.hidden_now.insert(1);
     s.pending_focus = Some(active_feedback::PendingFocus::new(2, Instant::now()));
-    let mut next = s.snapshot.clone();
+    let rendered = s.snapshot.clone();
+    let previous = Rc::downgrade(&rendered);
+    let mut next = s.snapshot.as_ref().clone();
     next.windows[0].title = "Changed title".into();
     next.windows[0].focused = false;
     next.windows[1].focused = true;
     next.windows[2].on_space = false;
     s.dirty = false;
     apply_snapshot(&mut s, next);
+    let shared_snapshot = !Rc::ptr_eq(&rendered, &s.snapshot)
+        && rendered.windows[0].title == "Snapshot QA 1"
+        && rendered.windows[0].focused;
+    drop(rendered);
+    let previous_released = previous.upgrade().is_none();
     let changed_windows = s.dirty
         && s.snapshot.windows[0].title == "Changed title"
         && s.order == [1, 2, 3]
@@ -547,7 +1133,7 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && s.hidden_now.is_empty()
         && s.pending_focus.is_none()
         && s.activity.len() == 2;
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.remove(0);
     next.windows.push(Window {
         id: 4,
@@ -558,19 +1144,19 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && !s.known_spaces.contains_key(&1)
         && s.known_spaces.contains_key(&4)
         && s.activity.len() == 1;
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.badges.insert("com.apple.TextEdit".into(), "2".into());
     s.dirty = false;
     apply_snapshot(&mut s, next);
     let badge_change = s.dirty && s.snapshot.badges["com.apple.TextEdit"] == "2";
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.control_error = Some("Snapshot QA control failure".into());
     s.pending_focus = Some(active_feedback::PendingFocus::new(3, Instant::now()));
     s.dirty = false;
     apply_snapshot(&mut s, next);
     let control_failure =
         s.pending_focus.is_none() && s.dirty && s.error == "Snapshot QA control failure";
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.control_error = None;
     s.pending_focus = Some(active_feedback::PendingFocus::new(
         3,
@@ -606,25 +1192,32 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
             && s.preview.as_ref().unwrap().image.image().is_none()
     };
     seed(&mut s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.screen_allowed = false;
     let permissions_changed = apply_snapshot(&mut s, next);
     let permission_cleanup = permissions_changed && released(&s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.screen_allowed = true;
     apply_snapshot(&mut s, next);
     seed(&mut s);
     s.config.thumbnails = false;
-    let next = s.snapshot.clone();
+    let next = s.snapshot.as_ref().clone();
     apply_snapshot(&mut s, next);
     let disabled_cleanup = released(&s);
+    s.preview_cache
+        .insert(2, image.clone(), bytes, Instant::now());
+    let next = s.snapshot.as_ref().clone();
+    apply_snapshot(&mut s, next);
+    let cache_cleanup = released(&s);
     s.config.thumbnails = true;
     seed(&mut s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.retain(|w| w.id != 2);
     apply_snapshot(&mut s, next);
     let closed_cleanup = released(&s) && s.order == [3, 4] && s.activity.len() == 0;
     let passed = cases.iter().all(|case| case["passed"] == true)
+        && shared_snapshot
+        && previous_released
         && changed_windows
         && membership_changes
         && badge_change
@@ -632,8 +1225,9 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && expired_feedback
         && permission_cleanup
         && disabled_cleanup
+        && cache_cleanup
         && closed_cleanup;
-    serde_json::json!({"passed":passed,"cases":cases,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"closed_cleanup":closed_cleanup})
+    serde_json::json!({"passed":passed,"cases":cases,"shared_snapshot":shared_snapshot,"previous_released":previous_released,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"cache_cleanup":cache_cleanup,"closed_cleanup":closed_cleanup})
 }
 
 fn check_presentation_updates(state: &Shared) -> serde_json::Value {
@@ -677,11 +1271,13 @@ fn check_presentation_updates(state: &Shared) -> serde_json::Value {
             s.config.theme = theme.into();
             s.config.font_size = 13.0 + i as f64 * 0.25;
             if i % 2 == 0 {
-                s.snapshot.badges.insert(bundle.into(), "1".into());
+                Rc::make_mut(&mut s.snapshot)
+                    .badges
+                    .insert(bundle.into(), "1".into());
             } else {
-                s.snapshot.badges.clear();
+                Rc::make_mut(&mut s.snapshot).badges.clear();
             }
-            s.snapshot.windows = vec![Window {
+            Rc::make_mut(&mut s.snapshot).windows = vec![Window {
                 id: 1,
                 bundle: bundle.into(),
                 app: "QA — App".into(),
@@ -715,7 +1311,9 @@ fn check_presentation_updates(state: &Shared) -> serde_json::Value {
             };
             let correct = button.title().to_string() == expected
                 && tooltip.to_string()
-                    == format!("QA — App — {title}\n⌘W while hovering closes this window")
+                    == format!(
+                        "QA — App — {title}\n⌘W closes this window. ⌘Q quits its application."
+                    )
                 && button.imagePosition()
                     == if show_titles {
                         NSCellImagePosition::ImageLeft
@@ -760,6 +1358,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.config.show_sort = true;
+        s.config.compact_related_windows = false;
         s.config.group_by_app = true;
         s.config.pins = vec![Pin {
             bundle: "com.apple.finder".into(),
@@ -767,7 +1366,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
         }];
         s.config.app_order = vec!["com.apple.Safari".into(), "com.apple.TextEdit".into()];
         s.config.app_order_initialized = true;
-        s.snapshot.windows = (1..=5)
+        Rc::make_mut(&mut s.snapshot).windows = (1..=5)
             .map(|id| Window {
                 id,
                 pid: if id < 4 { 1 } else { 2 },
@@ -789,7 +1388,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
             .collect();
         s.activity = crate::window_order::Activity::default();
         for id in [2, 4, 3] {
-            for w in &mut s.snapshot.windows {
+            for w in &mut Rc::make_mut(&mut s.snapshot).windows {
                 w.focused = w.id == id;
             }
             let State {
@@ -950,7 +1549,7 @@ fn check_pins(state: &Shared) -> serde_json::Value {
         s.config.all_displays = false;
         s.config.show_hidden = false;
         s.config.blacklist = vec![bundles[1].into()];
-        s.snapshot.windows.clear();
+        Rc::make_mut(&mut s.snapshot).windows.clear();
         s.pending_focus = None;
     }
     let mut cases = Vec::new();
@@ -1005,7 +1604,7 @@ fn check_pins(state: &Shared) -> serde_json::Value {
         ),
         ("all_windows_closed", vec![], vec![0, 1, 2]),
     ] {
-        state.borrow_mut().snapshot.windows = windows;
+        Rc::make_mut(&mut state.borrow_mut().snapshot).windows = windows;
         render(state);
         let s = state.borrow();
         let bar = &s.bars[0];
@@ -1059,7 +1658,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
             s.pending_focus,
             s.config.click_hides_app,
         );
-        for w in &mut s.snapshot.windows {
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.focused = w.id == 1;
             w.hidden = false;
             w.minimized = false;
@@ -1077,7 +1676,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.pending_focus = None;
-        for w in &mut s.snapshot.windows {
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.focused = w.id == 64;
             w.minimized = w.id == 64;
         }
@@ -1087,7 +1686,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.pending_focus = None;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -1096,9 +1695,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     }
     dispatch(state, Action::Window(64));
     let confirmed_focus_toggles = state.borrow().pending_focus.is_none();
-    state
-        .borrow_mut()
-        .snapshot
+    Rc::make_mut(&mut state.borrow_mut().snapshot)
         .windows
         .iter_mut()
         .find(|w| w.id == 64)
@@ -1115,7 +1712,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     };
     {
         let mut s = state.borrow_mut();
-        s.snapshot.windows = windows;
+        Rc::make_mut(&mut s.snapshot).windows = windows;
         s.pending_focus = pending;
         s.config.click_hides_app = hides;
     }
@@ -1126,7 +1723,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
 fn check_cursor_and_clicks(state: &Shared) -> serde_json::Value {
     let (panel, root, scroll, tasks, buttons) = {
         let mut s = state.borrow_mut();
-        for window in &mut s.snapshot.windows {
+        for window in &mut Rc::make_mut(&mut s.snapshot).windows {
             window.focused = false;
         }
         s.pending_focus = None;
@@ -1299,8 +1896,8 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         let mut s = state.borrow_mut();
         s.config.thumbnails = true;
         s.config.hover_ms = 0;
-        s.snapshot.screen_allowed = true;
-        for w in &mut s.snapshot.windows {
+        Rc::make_mut(&mut s.snapshot).screen_allowed = true;
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.minimized = w.id == 63 || w.id == 64;
         }
         s.preview_cache
@@ -1346,7 +1943,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
             s.config.thumbnail_font = font;
             s.config.thumbnail_scale = scale;
             s.config.thumbnail_titles = visible;
-            s.snapshot
+            Rc::make_mut(&mut s.snapshot)
                 .windows
                 .iter_mut()
                 .find(|w| w.id == 64)
@@ -1370,7 +1967,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         s.config.thumbnail_font = saved.0;
         s.config.thumbnail_scale = saved.1;
         s.config.thumbnail_titles = saved.2;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -1423,6 +2020,16 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         )
     };
     let cached_minimized_close = command_w_closes(cached_close_target, 63);
+    let cached_minimized_quit = {
+        let s = state.borrow();
+        let frame = s.preview.as_ref().unwrap().panel.frame();
+        hover_close::action_at(
+            &s,
+            NSPoint::new(frame.origin.x + 5.0, frame.origin.y + 5.0),
+            panel_number,
+            12,
+        ) == Some(Action::QuitApp(1063))
+    };
     hide_preview(state);
     state.borrow_mut().preview_cache.retain(|id| id != 63);
     begin_hover(state, 63, number, anchor);
@@ -1444,10 +2051,25 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         hover_close::tile_at(bar, bar.panel.convertPointToScreen(local))
     };
     let cold_minimized_close = command_w_closes(cold_close_target, 63);
+    let cold_minimized_quit = {
+        let s = state.borrow();
+        let bar = &s.bars[0];
+        let button = &bar.buttons[&Action::Window(63)];
+        bar.panel.orderFrontRegardless();
+        let p = button.convertPoint_toView(NSPoint::new(5.0, 5.0), None);
+        let target = hover_close::action_at(
+            &s,
+            bar.panel.convertPointToScreen(p),
+            bar.panel.windowNumber(),
+            12,
+        );
+        bar.panel.orderOut(None);
+        target == Some(Action::QuitApp(1063))
+    };
     hide_preview(state);
     let (retained_after_restore, closed_released) = {
         let mut s = state.borrow_mut();
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -1456,7 +2078,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         poll_images(&mut s);
         let retained =
             s.preview_cache.get(64).is_some() && s.preview_cache.needs_refresh(64, Instant::now());
-        s.snapshot.windows.retain(|w| w.id != 64);
+        Rc::make_mut(&mut s.snapshot).windows.retain(|w| w.id != 64);
         let alive = s.snapshot.windows.iter().map(|w| w.id).collect();
         prune_preview_sources(&mut s, &alive);
         (
@@ -1471,11 +2093,13 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         && cached_switch
         && cached_minimized_close
         && cold_minimized_close
+        && cached_minimized_quit
+        && cold_minimized_quit
         && cold_minimized_skips_capture
         && retained_after_restore
         && closed_released
         && retained_bytes <= preview_cache::MAX_BYTES;
-    serde_json::json!({"passed":passed,"cached_image_age_seconds":3600,"cached_displayed":cached_displayed,"preview_metadata_updates_and_reuses":preview_metadata,"minimized_skips_capture":no_capture,"cold_minimized_skips_capture":cold_minimized_skips_capture,"cached_minimized_command_w":cached_minimized_close,"cold_minimized_command_w":cold_minimized_close,"retained_after_restore":retained_after_restore,"closed_releases_bitmap":closed_released,"cache_bytes":retained_bytes,"popup_meets_task_strip":gapless_position,"cached_switch_synchronous":cached_switch})
+    serde_json::json!({"passed":passed,"cached_image_age_seconds":3600,"cached_displayed":cached_displayed,"preview_metadata_updates_and_reuses":preview_metadata,"minimized_skips_capture":no_capture,"cold_minimized_skips_capture":cold_minimized_skips_capture,"cached_minimized_command_w":cached_minimized_close,"cold_minimized_command_w":cold_minimized_close,"cached_minimized_command_q":cached_minimized_quit,"cold_minimized_command_q":cold_minimized_quit,"retained_after_restore":retained_after_restore,"closed_releases_bitmap":closed_released,"cache_bytes":retained_bytes,"popup_meets_task_strip":gapless_position,"cached_switch_synchronous":cached_switch})
 }
 
 fn command_w_closes(target: Option<u32>, expected: u32) -> bool {

@@ -10,8 +10,13 @@ Accessibility access supplies window discovery and controls. An application must
 | Capability | Access | Behavior and limits |
 | --- | --- | --- |
 | One button per window | Taskbar | Shows an app icon and a single-line title with truncation. A tooltip supplies the full title |
+| Chrome profile badges | Preferences → Taskbar | On by default. Adds a small local profile photo and color ring to each matched Chrome window icon. A missing photo uses an initial. Supports standard Stable, Beta, Dev, and Canary data folders with English accessibility titles. Ambiguous identities receive no badge |
+| Related-window bubbles | Preferences → Taskbar | On by default. Groups utility windows with a clear owner. Shows up to three small controls, with an overflow list. Independent main windows keep separate tiles |
+| Native macOS tabs | Bubbles on a window button | Selects the application's native tab control directly. Supports AppKit tab groups, including [Ghostty's native tab implementation](https://github.com/ghostty-org/ghostty/blob/main/macos/Sources/Features/Terminal/TerminalController.swift). Shows names on hover; inactive tabs have no independent captured image |
+| Close a related window or tab | Hover **⌘W**, middle-click, or bubble context menu | Targets that specific native control. A renamed tab retains its identity. The worker limits tab metadata to 128 controls per group and 4096 retained controls overall |
 | Activate and restore | Click a window button | Activates that specific window and restores it if minimized. Active feedback appears on the button |
 | Close a window | Hover **⌘W**, thumbnail **×**, or context menu | Closes the selected window, including minimized windows. Save dialogs remain under the application's control |
+| Quit an application | Hover **⌘Q** over a window button, bubble, or thumbnail | Quits that window's application. Save dialogs remain under the application's control |
 | Middle-click close | Preferences → Taskbar | Enabled by default. The option controls middle-click on a window button |
 | Minimize and fullscreen | Right-click a window button | Provides **Minimize / Restore** and **Toggle Full Screen**. Support depends on the application |
 | Application controls | Right-click a window button | Provides **Hide Application** and the separate **Quit Application** action |
@@ -63,6 +68,7 @@ Browser content tabs remain under the browser's control. Rowla does not provide 
 | Preview capture method | Preferences → Thumbnails | Stream is the default. Snapshot uses the single-image API. Both share the cache and one-operation limit |
 | Capture lifecycle | Automatic, macOS 15.2+ | Active/inactive callbacks stop unavailable sources after a confirmed native stop. They do not define minimized-window behavior |
 | Bounded preview resources | Automatic | Limits thumbnail bitmaps to 16 MiB and 32 entries. At most one capture operation runs. Stream mode uses a three-buffer queue. Total process memory is larger |
+| Bounded profile photos | Automatic | Uses one file worker, bounded queues, and 32 × 32 shared pixels. Limits each Chrome channel to 32 profiles. Unchanged photos reuse their pixels. No extension or network request is necessary |
 | Start at login | Preferences → Taskbar | Off for fresh preferences. macOS controls login registration and can require approval |
 | Dock replacement option | Preferences → Advanced | Off for fresh preferences. Fully hides the Dock while Rowla runs. Quit restores its saved Dock values. After a crash, the next launch restores them |
 | Avoid bar overlap | Preferences → Advanced | Optional automatic resize of overlapping windows. Off for fresh preferences. Needs Accessibility |

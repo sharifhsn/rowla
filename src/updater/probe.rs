@@ -1,6 +1,7 @@
 //! Read-only local-feed integration test. Never downloads or installs an update.
 use super::*;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class};
+use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 use objc2_foundation::{NSObject, NSObjectProtocol};
 use std::{
     cell::RefCell,
@@ -17,29 +18,39 @@ struct Ivars {
     result: Rc<RefCell<ResultData>>,
 }
 define_class!(
-    #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=Ivars]
-    #[name="TaskbarRustUpdaterProbe"] struct Delegate;
-    unsafe impl NSObjectProtocol for Delegate{}
-    impl Delegate{
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Ivars]
+    #[name = "TaskbarRustUpdaterProbe"]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    impl Delegate {
         #[unsafe(method(updater:didFindValidUpdate:))]
-        fn found(&self,_updater:&AnyObject,item:&AnyObject){
-            let version:Retained<NSString>=unsafe{msg_send![item,versionString]};
-            self.ivars().result.borrow_mut().version=Some(version.to_string());
+        fn found(&self, _updater: &AnyObject, item: &AnyObject) {
+            let version: Retained<NSString> = unsafe { msg_send![item, versionString] };
+            self.ivars().result.borrow_mut().version = Some(version.to_string());
         }
+
         #[unsafe(method(updater:didAbortWithError:))]
-        fn failed(&self,_updater:&AnyObject,error:&AnyObject){self.ivars().result.borrow_mut().error=Some(native_error((error as *const AnyObject).cast_mut(),"Sparkle error"));}
+        fn failed(&self, _updater: &AnyObject, error: &AnyObject) {
+            self.ivars().result.borrow_mut().error = Some(native_error(
+                std::ptr::from_ref(error).cast_mut(),
+                "Sparkle error",
+            ));
+        }
+
         #[unsafe(method(updater:didFinishUpdateCycleForUpdateCheck:error:))]
-        fn finished(&self,_updater:&AnyObject,_check:isize,error:Option<&AnyObject>){
-            let mut result=self.ivars().result.borrow_mut();result.finished=true;
-            if let Some(error)=error{result.error=Some(native_error((error as *const AnyObject).cast_mut(),"Sparkle error"));}
+        fn finished(&self, _updater: &AnyObject, _check: isize, error: Option<&AnyObject>) {
+            let mut result = self.ivars().result.borrow_mut();
+            result.finished = true;
+            if let Some(error) = error {
+                result.error = Some(native_error(std::ptr::from_ref(error).cast_mut(), "Sparkle error"));
+            }
         }
     }
 );
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRunLoopRunInMode(mode: *const std::ffi::c_void, seconds: f64, once: bool) -> i32;
-    static kCFRunLoopDefaultMode: *const std::ffi::c_void;
-}
 pub(super) fn run() -> bool {
     let mtm = MainThreadMarker::new().unwrap();
     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -71,8 +82,9 @@ pub(super) fn run() -> bool {
     }
     let start = Instant::now();
     while !result.borrow().finished && start.elapsed() < Duration::from_secs(20) {
-        objc2::rc::autoreleasepool(|_| unsafe {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+        objc2::rc::autoreleasepool(|_| {
+            // SAFETY: Core Foundation supplies this immutable run-loop mode.
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.05, true);
         });
     }
     let data = result.borrow();

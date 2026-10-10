@@ -11,7 +11,7 @@ Built for people who keep many windows open and want a predictable place to find
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS 15.2+](https://img.shields.io/badge/macOS-15.2%2B-black.svg)](USER_GUIDE.md#requirements)
 
-[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.2.0-beta.1/Rowla-0.2.0-beta.1-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
+[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.2.0-beta.2/Rowla-0.2.0-beta.2-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
 
 > **Beta:** macOS 15.2+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
 > macOS can require **Open Anyway** on first launch. Updates use manual downloads.
@@ -26,6 +26,9 @@ Built for people who keep many windows open and want a predictable place to find
 | **Sort**, beside Start | Restores your configured app order. Recent main windows come before popups within each app. |
 | **Hover preview** | Shows a cached thumbnail immediately. A fresh capture needs time. |
 | **Hover ⌘W** or the small **×** | Closes that window, including minimized windows. The app can ask you to save changes. |
+| **Hover ⌘Q** | Quits the application that owns the hovered window, bubble, or thumbnail. |
+| **Related-window bubbles** | Shows related utility windows and native tabs as small controls on their main tile. Tab changes preserve the tile position. |
+| **Chrome profile badges** | Adds a small local profile photo or initial to matched Chrome window icons. |
 | **Pinned apps** | Shows launch icons when the app has no discovered window. |
 | **Start** | Searches installed apps, with pinned/recent lists and arrow-key navigation. |
 | **Window context menu** | Provides minimize/restore, fullscreen, app hide/quit, pins, and exclusions. |
@@ -51,7 +54,7 @@ Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for the API 
 [Apple describes Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Keep Gatekeeper and SIP enabled.
 Use the menu-bar icon for Preferences or Quit. Start at login and automatic window resizing are off for fresh preferences.
 
-[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.2.0-beta.1) · [Installation help](docs/SUPPORT.md#first-launch-problems)
+[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.2.0-beta.2) · [Installation help](docs/SUPPORT.md#first-launch-problems)
 
 ## Privacy and resources
 
@@ -92,7 +95,7 @@ A fresh checkout uses an ad-hoc signature and needs no Apple Developer membershi
 Changed ad-hoc builds can need new permission grants. See [local certificates](docs/RELEASE.md#local-signatures-and-permissions) for repeated builds.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and native tests. Linux supports the portable library checks, not the macOS app.
-The [release tag](https://github.com/sharifhsn/rowla/tree/v0.2.0-beta.1) preserves the shipped source.
+The [release tag](https://github.com/sharifhsn/rowla/tree/v0.2.0-beta.2) preserves the shipped source.
 The original beta and its source tag remain available in the release history.
 
 <details>

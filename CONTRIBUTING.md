@@ -42,15 +42,11 @@ The public beta download supports Apple Silicon only.
 ## Checks
 
 ```sh
-cargo fmt --all --check
-cargo test --locked --all-targets -j 2
-cargo clippy --locked --all-targets -j 2 -- -D warnings
-for script in scripts/*.sh; do bash -n "$script"; done
-scripts/build.sh
-python3 scripts/check-compatibility.py dist/Rowla.app
-dist/Rowla.app/Contents/MacOS/taskbar-rs --check-compatibility
-TASKBAR_TEST_BUNDLE="$PWD/dist/Rowla.app" python3 -m unittest discover -s tests -v
+scripts/check.sh
 ```
+
+This command does the format, Rust, Clippy, shell, build, compatibility, native UI, and Python checks.
+It builds a test bundle. It does not replace the installed app.
 
 Rust tests include opt-in sort and native dictionary microbenchmarks. The default checks skip these microbenchmarks.
 Python tests use temporary app bundles and a local HTTP server. They do not install Rowla or request screen permissions.
@@ -59,8 +55,7 @@ The stable-certificate test needs a certificate identity through `TASKBAR_TEST_L
 Linux supports the portable library checks:
 
 ```sh
-cargo test --locked --lib -j 2
-cargo clippy --locked --lib -j 2 -- -D warnings
+scripts/check.sh --core
 ```
 
 For documentation-only changes, examine local links, anchors, YAML forms, and the updated GitHub page. No native build is necessary.
@@ -70,28 +65,8 @@ CI does not grant Accessibility or Screen Recording access. It does not prove co
 
 ## Code structure
 
-| Path | Responsibility |
-| --- | --- |
-| `src/ui.rs`, `src/ui/` | AppKit controls, previews, menus, and native UI checks |
-| `src/platform.rs`, `src/platform/` | Accessibility discovery, observers, and window controls |
-| `src/capture.rs` | Serial ScreenCaptureKit stream and snapshot capture |
-| `src/native_features.rs` | Runtime checks for newer optional APIs and compatibility probe |
-| `src/system_actions.rs`, `shortcuts/` | Exact local action URLs and signed shortcut import files |
-| `src/config.rs`, `src/window_order.rs` | Preferences and Sort order |
-| `src/runtime.rs`, `src/scheduler.rs`, `src/ipc_budget.rs` | Work queues, deadlines, and request limits |
-| `src/models.rs` | Owned window data |
-| `src/private_api.rs` | Optional private window and Spaces functions |
-| `src/updater.rs`, `src/updater/` | Sparkle integration and isolated updater checks |
-| `scripts/`, `tests/` | Build, installation, release tools, and fixtures |
-
-Keep AppKit controls on the main thread. Keep Accessibility calls and observers on the window worker.
-Keep ScreenCaptureKit work on its serial worker. Explain unsafe ownership and thread assumptions in code comments.
-
-Do not put native Accessibility pointers or capture buffers in public models.
-Keep caches and work queues bounded. Count failed capture requests against rate limits.
-
-The internal executable is `taskbar-rs`. The bundle identifier is `io.sharif.taskbarrust`.
-Preferences use `~/Library/Application Support/Taskbar Rust/`. Preserve these names for upgrade compatibility.
+Use the [project guide](AGENTS.md#code) for the complete code map and native invariants.
+The guide also maps the user docs, API research, QA results, release procedure, and repository policies.
 
 ## Native checks
 
@@ -107,6 +82,7 @@ Run these commands in a local macOS desktop session. They create temporary test 
 
 For window-control or capture changes, also do checks of permission denial, window close, minimized windows, sleep, and display changes.
 Use `scripts/live-qa-fixture.py` for disposable fixture windows. Capture and Accessibility checks can need macOS permissions.
+Use the [first-click regression procedure](docs/QA_FIRST_CLICK.md) for late native replies, restore, and rapid target changes.
 Remove personal window titles and screenshots from bug reports.
 Finite memory profiles do not prove that all native paths are free of leaks.
 

@@ -36,7 +36,11 @@ Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBI
 
 - Click a window button to activate or restore that window.
 - Hover over a window button to see its thumbnail.
+- Small bubbles at the top of a window button show related utility windows and native macOS tabs. Hover for their full names.
+- Click a bubble to show its window or select its tab. Use the count bubble to open the full list.
+- Press **⌘W** over a bubble to close its specific window or tab.
 - Press **⌘W** with the pointer over a window button or thumbnail to close that window. This also works with minimized windows.
+- Press **⌘Q** over a window button, bubble, or thumbnail to quit its application.
 - Select the small **×** on a thumbnail to close its window.
 - Use the **Sort** button immediately after Start to apply your preferred application order.
 - Use Preferences → Sort to change the application order. Recent main windows come before popups in each application.
@@ -45,6 +49,16 @@ Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBI
 - Select the Rowla menu-bar icon to open Preferences or quit Rowla.
 
 Close controls close the selected window. They do not quit the application. An application can display its normal save-confirmation dialog.
+
+Compact bubbles are on by default. Disable **Preferences → Taskbar → Show related windows as compact bubbles** to restore separate tiles.
+Independent main windows retain separate tiles. Rowla groups a utility window only when its owner is clear.
+Native tabs use the application's Accessibility tab controls. This includes AppKit tab groups used by applications such as Ghostty.
+An inactive native tab exposes its name; its image becomes available after selection. Browser document tabs need application-specific support.
+
+Chrome window icons show a small profile photo at the top right. A profile-color ring and tooltip help identify the profile.
+The badge uses Chrome's local profile metadata and cached photo. A missing photo uses a colored initial.
+Disable **Preferences → Taskbar → Show Chrome profile badges** to remove these badges.
+The feature supports standard Chrome data folders and English accessibility titles. Unknown or ambiguous profiles receive no badge.
 
 Pinned icons appear only when the application has no discovered window. A minimized or hidden window still counts as a window.
 

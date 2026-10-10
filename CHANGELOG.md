@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.2.0-beta.2 — October 10, 2026
+
+- Related utility windows and native tabs appear as compact bubbles on their main tile.
+- Native tab changes preserve the tile position. Temporary gaps in window discovery preserve related controls.
+- Chrome windows show local profile photos or initials.
+- Hover **⌘Q** quits the application that owns the window.
+- Window activation recovers from late Accessibility replies and discards obsolete targets.
+- Shared snapshots, bounded native controls, and fewer temporary allocations reduce repeated work.
+- The project guide and check scripts use one source for each procedure.
+
+Apple Silicon, macOS 15.2+. Manual downloads use a development certificate with no Apple notarization.
+The thumbnail cache remains limited to 16 MiB and 32 images. This is not a total process memory limit.
+
+## 0.2.0-beta.1 — October 5, 2026
+
+- The minimum supported macOS version changes to 15.2.
+- Signed Shortcuts provide Sort Windows, Show Taskbars, and Hide Taskbars.
+- Optional native features use runtime availability checks.
+- CI covers Apple Silicon and Intel on macOS 15 and 26.
+
 ## 0.1.0-beta.1 — October 4, 2026
 
 First public Rowla beta for Apple Silicon and macOS 26 or later.

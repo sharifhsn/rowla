@@ -1,17 +1,18 @@
 //! macOS window service. All AX elements belong to this worker; the UI receives values.
 //! Every Core Foundation Create/Copy result has exactly one owner and release.
 use crate::config::Config;
+use crate::ipc_budget;
 use objc2::{
     msg_send,
     rc::Retained,
     rc::autoreleasepool,
     runtime::{AnyClass, AnyObject},
 };
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 use objc2_foundation::{NSArray, NSPoint, NSSize, NSString, NSURL, ns_string};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{c_char, c_void},
+    ffi::c_void,
     sync::mpsc::{Receiver, Sender},
     time::{Duration, Instant},
 };
@@ -28,8 +29,6 @@ unsafe extern "C" {
     fn CFDictionaryGetTypeID() -> usize;
     fn CFArrayGetTypeID() -> usize;
     fn CFEqual(a: Ref, b: Ref) -> bool;
-    fn CFStringGetCString(value: Ref, buffer: *mut c_char, size: isize, encoding: u32) -> bool;
-    fn CFStringGetLength(value: Ref) -> isize;
     fn CFArrayGetCount(value: Ref) -> isize;
     fn CFArrayGetValueAtIndex(value: Ref, index: isize) -> Ref;
     fn CFArrayCreate(allocator: Ref, values: *const Ref, count: isize, callbacks: Ref) -> Ref;
@@ -64,6 +63,12 @@ unsafe extern "C" {}
 unsafe extern "C" {}
 
 struct Owned(Ref);
+struct TabElement {
+    element: Owned,
+    owner: Owned,
+    seen: Instant,
+}
+static NEXT_TAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static CF_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static CF_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 fn owned(p: Ref) -> Owned {
@@ -100,6 +105,8 @@ fn cf_string(name: &NSString) -> Ref {
     std::ptr::from_ref(string).cast()
 }
 fn string(p: Ref) -> String {
+    use objc2_core_foundation::{CFString, CFStringBuiltInEncodings};
+
     if p.is_null() {
         return String::new();
     }
@@ -107,8 +114,23 @@ fn string(p: Ref) -> String {
         if CFGetTypeID(p) != CFStringGetTypeID() {
             return String::new();
         }
-        let mut data = vec![0u8; (CFStringGetLength(p) as usize * 4 + 1).min(32769)];
-        if CFStringGetCString(p, data.as_mut_ptr().cast(), data.len() as isize, 0x08000100) {
+        // SAFETY: the caller keeps this native value alive through conversion.
+        // The type check permits this borrow. No native pointer leaves this call.
+        let value = &*p.cast::<CFString>();
+        let size = (value.length() as usize * 4 + 1).min(32769);
+        let mut stack = [0u8; 512];
+        let mut heap = Vec::new();
+        let data = if size <= stack.len() {
+            &mut stack[..size]
+        } else {
+            heap.resize(size, 0);
+            &mut heap
+        };
+        if value.c_string(
+            data.as_mut_ptr().cast(),
+            data.len() as isize,
+            CFStringBuiltInEncodings::EncodingUTF8.0,
+        ) {
             std::ffi::CStr::from_ptr(data.as_ptr().cast())
                 .to_string_lossy()
                 .into_owned()
@@ -132,15 +154,17 @@ fn dict(d: Ref, key: &NSString) -> Ref {
     }
     unsafe { CFDictionaryGetValue(d, cf_string(key)) }
 }
-fn array(a: Ref) -> Vec<Ref> {
-    if a.is_null() || unsafe { CFGetTypeID(a) != CFArrayGetTypeID() } {
-        return vec![];
-    }
-    unsafe {
-        (0..CFArrayGetCount(a).min(4096))
-            .map(|i| CFArrayGetValueAtIndex(a, i))
-            .collect()
-    }
+fn array(value: &Owned) -> impl ExactSizeIterator<Item = Ref> + DoubleEndedIterator + '_ {
+    // SAFETY: Owned retains the native value for this iterator's lifetime.
+    // Check its type before indexing, and preserve the native enumeration limit.
+    let count = unsafe {
+        if CFGetTypeID(value.0) == CFArrayGetTypeID() {
+            CFArrayGetCount(value.0).clamp(0, 4096)
+        } else {
+            0
+        }
+    };
+    (0..count).map(move |index| unsafe { CFArrayGetValueAtIndex(value.0, index) })
 }
 fn attr(el: Ref, name: &NSString) -> Option<Owned> {
     if el.is_null() || unsafe { CFGetTypeID(el) != AXUIElementGetTypeID() } {
@@ -210,6 +234,9 @@ pub(crate) use crate::models::{Application, Snapshot, Window};
 #[derive(Clone, Debug)]
 pub enum Command {
     Activate(u32, bool),
+    SelectTab(u64),
+    CloseTab(u64),
+    CloseSelectedTab(u64),
     Minimize(u32),
     Close(u32),
     CloseRestored(u32),
@@ -245,8 +272,7 @@ fn active_spaces() -> HashSet<i64> {
     let Some(data) = (unsafe { Owned::from_create(crate::private_api::active_spaces()) }) else {
         return HashSet::new();
     };
-    array(data.0)
-        .into_iter()
+    array(&data)
         .map(|d| {
             number(dict(
                 dict(d, ns_string!("Current Space")),
@@ -268,17 +294,18 @@ fn window_spaces(id: u32) -> Vec<i64> {
         return vec![];
     };
     let values = [num.0];
-    let a = unsafe {
+    let Some(a) = (unsafe {
         Owned::from_create(CFArrayCreate(
             std::ptr::null(),
             values.as_ptr(),
             1,
             kCFTypeArrayCallBacks.as_ptr().cast(),
         ))
-    }
-    .unwrap();
+    }) else {
+        return vec![];
+    };
     unsafe { Owned::from_create(crate::private_api::window_spaces(a.0)) }
-        .map(|v| array(v.0).into_iter().map(number).collect())
+        .map(|value| array(&value).map(number).collect())
         .unwrap_or_default()
 }
 fn geometry(el: Ref) -> (f64, f64, f64, f64) {
@@ -312,6 +339,156 @@ fn geometry(el: Ref) -> (f64, f64, f64, f64) {
     (p.x, p.y, s.width, s.height)
 }
 
+fn native_tab_group(el: Ref) -> Option<Owned> {
+    let children = attr(el, ns_string!("AXChildren"))?;
+    // Native AppKit tab bars are direct window children. Do not descend into
+    // web content or terminal panes, or retain their accessibility objects.
+    for child in array(&children).take(16) {
+        if text_attr(child, ns_string!("AXRole")) == "AXTabGroup" {
+            // SAFETY: retain this borrowed array element before releasing its array.
+            return unsafe { Owned::from_borrowed(child) };
+        }
+        if ipc_budget::expired() {
+            break;
+        }
+    }
+    None
+}
+fn native_tab_info(
+    el: Ref,
+    previous: Option<&Window>,
+    cursor: usize,
+    cache: &mut HashMap<u64, TabElement>,
+) -> Option<(Vec<crate::models::WindowTab>, usize, usize)> {
+    // Finish names from the retained controls on the next slice. Repeatedly
+    // traversing the tab bar can otherwise spend the entire short budget.
+    let pending = previous.filter(|w| {
+        w.tabs.iter().any(|t| !t.resolved) && w.tabs.iter().all(|t| cache.contains_key(&t.id))
+    });
+    let mut source = None;
+    let (raw, count) = if let Some(w) = pending {
+        (
+            w.tabs
+                .iter()
+                .map(|t| cache[&t.id].element.0)
+                .collect::<Vec<_>>(),
+            w.tab_count,
+        )
+    } else {
+        let Some(group) = native_tab_group(el) else {
+            return ipc_budget::healthy().then_some((Vec::new(), 0, 0));
+        };
+        let tabs = attr(group.0, ns_string!("AXTabs"))?;
+        let raw: Vec<_> = array(&tabs).collect();
+        let count = raw.len();
+        source = Some(tabs);
+        (raw, count)
+    };
+    let limit = count.min(128);
+    let mut result = previous
+        .filter(|w| w.tab_count == count)
+        .map(|w| w.tabs.clone())
+        .unwrap_or_default();
+    for (index, tab) in raw.iter().copied().enumerate().take(limit) {
+        // SAFETY: source or the cache owns every AX element during comparison.
+        let known = result
+            .get(index)
+            .map(|t| t.id)
+            .filter(|id| {
+                cache
+                    .get(id)
+                    .is_some_and(|old| unsafe { CFEqual(old.element.0, tab) })
+            })
+            .or_else(|| {
+                cache
+                    .iter()
+                    .find(|(_, old)| unsafe { CFEqual(old.element.0, tab) })
+                    .map(|(id, _)| *id)
+            });
+        let id = if let Some(id) = known {
+            let cached = cache.get_mut(&id).unwrap();
+            cached.seen = Instant::now();
+            // SAFETY: discovery retains both the current and cached owners.
+            if !unsafe { CFEqual(cached.owner.0, el) } {
+                cached.owner = unsafe { Owned::from_borrowed(el) }?;
+            }
+            id
+        } else {
+            if cache.len() >= 4096 {
+                break;
+            }
+            // SAFETY: source or the cache still owns this borrowed element.
+            let Some(element) = (unsafe { Owned::from_borrowed(tab) }) else {
+                break;
+            };
+            let id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            cache.insert(
+                id,
+                TabElement {
+                    element,
+                    // SAFETY: the owning window stays alive during discovery.
+                    owner: unsafe { Owned::from_borrowed(el) }?,
+                    seen: Instant::now(),
+                },
+            );
+            id
+        };
+        if index >= result.len() {
+            result.push(crate::models::WindowTab {
+                id,
+                ..Default::default()
+            });
+        } else if result[index].id != id {
+            result[index] = crate::models::WindowTab {
+                id,
+                ..Default::default()
+            };
+        }
+    }
+    result.truncate(limit);
+    let start = result
+        .iter()
+        .position(|t| !t.resolved)
+        .unwrap_or(cursor.min(result.len().saturating_sub(1)));
+    let mut next = start;
+    for (index, tab) in raw.into_iter().enumerate().take(result.len()).skip(start) {
+        if ipc_budget::expired() {
+            break;
+        }
+        let title = text_attr(tab, ns_string!("AXTitle"))
+            .chars()
+            .take(256)
+            .collect();
+        if !ipc_budget::healthy() {
+            break;
+        }
+        // AppKit can return AXErrorFailure for an inactive tab's AXValue.
+        // Its identity and name remain valid. This optional query must not
+        // discard them or delay discovery of the next tab.
+        let (selected, _) = ipc_budget::run(ipc_budget::remaining(), || {
+            // SAFETY: source or the cache retains this tab throughout the query.
+            attr(tab, ns_string!("AXValue")).is_some_and(|v| unsafe {
+                (CFGetTypeID(v.0) == CFBooleanGetTypeID() && CFBooleanGetValue(v.0))
+                    || (CFGetTypeID(v.0) == CFNumberGetTypeID() && number(v.0) != 0)
+            })
+        });
+        result[index].title = title;
+        result[index].selected = selected;
+        result[index].resolved = true;
+        next = if index + 1 == limit { 0 } else { index + 1 };
+    }
+    drop(source);
+    Some((result, count, next))
+}
+fn parent_window(el: Ref) -> Option<u32> {
+    let parent = attr(el, ns_string!("AXParent"))?;
+    if text_attr(parent.0, ns_string!("AXRole")) != "AXWindow" {
+        return None;
+    }
+    // SAFETY: the retained parent AX element stays alive on this worker.
+    unsafe { crate::private_api::window_id(parent.0) }
+}
+
 mod service;
 pub fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) {
     service::worker(rx, tx)
@@ -319,8 +496,44 @@ pub fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) 
 fn scan(elements: &mut HashMap<u32, Owned>) -> Snapshot {
     service::snapshot(elements, Duration::from_secs(2))
 }
-// A returned ID waits for close controls after native restore.
-fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u32>, String> {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum DeferredClose {
+    Window(u32),
+    Tab(u64),
+}
+fn tab_pid(target: &TabElement) -> Option<i32> {
+    unsafe extern "C" {
+        fn AXUIElementGetPid(el: Ref, pid: *mut i32) -> i32;
+    }
+    let mut pid = 0;
+    // SAFETY: the worker retains the owner during this native query.
+    (unsafe { AXUIElementGetPid(target.owner.0, &mut pid) } == 0).then_some(pid)
+}
+fn native_tab_window(target: &TabElement, require_selected: bool) -> Option<Owned> {
+    let pid = tab_pid(target)?;
+    // SAFETY: this worker owns the Create result and releases it after use.
+    let root = unsafe { Owned::from_create(AXUIElementCreateApplication(pid)) }?;
+    let focused = attr(root.0, ns_string!("AXFocusedWindow"))?;
+    let group = native_tab_group(focused.0)?;
+    let tabs = attr(group.0, ns_string!("AXTabs"))?;
+    let belongs = array(&tabs).take(128).any(|tab| {
+        // SAFETY: the copied array and target cache retain both AX elements.
+        unsafe { CFEqual(tab, target.element.0) }
+    });
+    // AppKit only exposes a true AXValue on its selected radio tab. A missing
+    // or late value must never authorize closing some other focused window.
+    (belongs && (!require_selected || bool_attr(target.element.0, ns_string!("AXValue"))))
+        .then_some(focused)
+}
+fn focused_tab_window(target: &TabElement) -> Option<Owned> {
+    native_tab_window(target, true)
+}
+// Deferred controls wait for native restore or tab selection before one close press.
+fn execute(
+    command: Command,
+    elements: &HashMap<u32, Owned>,
+    tabs: &HashMap<u64, TabElement>,
+) -> Result<Option<DeferredClose>, String> {
     if crate::runtime::stopping() {
         return Err("Window service is stopping".into());
     }
@@ -339,22 +552,60 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
     let result = match command {
         Command::Launch(bundle, mode) => launch(&bundle, &mode),
         Command::Dock(hidden) => crate::dock::apply(hidden),
+        Command::SelectTab(id) | Command::CloseTab(id) | Command::CloseSelectedTab(id) => {
+            let target = tabs
+                .get(&id)
+                .ok_or("Native tab changed; wait for discovery to refresh")?;
+            if matches!(command, Command::CloseSelectedTab(..)) {
+                if objc2_app_kit::NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    != tab_pid(target)
+                {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                let Some(focused) = focused_tab_window(target) else {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                };
+                if !ipc_budget::healthy() {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                let button = attr(focused.0, ns_string!("AXCloseButton"));
+                if !ipc_budget::healthy() || button.is_none() {
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                check(action(button.unwrap().0, ns_string!("AXPress")))
+            } else {
+                let pid = tab_pid(target).ok_or("Cannot identify native tab owner")?;
+                check(activate_pid(pid))?;
+                if bool_attr(target.owner.0, ns_string!("AXMinimized")) {
+                    check(set_bool(target.owner.0, ns_string!("AXMinimized"), false))?;
+                }
+                let same_group = ipc_budget::run(ipc_budget::remaining(), || {
+                    native_tab_window(target, false).is_some()
+                })
+                .0;
+                if !same_group {
+                    set_bool_tracking(target.owner.0, ns_string!("AXMain"), true, false);
+                    check(action(target.owner.0, ns_string!("AXRaise")))
+                        .map_err(|e| format!("{e}: native owner raise"))?;
+                }
+                // Native tab selection is idempotent. Raising the old owner
+                // after this press would switch back to the previous tab.
+                let selected = action(target.element.0, ns_string!("AXPress"));
+                if matches!(command, Command::CloseTab(..)) {
+                    // Poll exact native identity before closing. Never retry
+                    // an actual close press, including after a late AX reply.
+                    return Ok(Some(DeferredClose::Tab(id)));
+                }
+                check(selected).map_err(|e| format!("{e}: native tab selection"))
+            }
+        }
         Command::Activate(id, hide) => {
             let w = window(id)?;
             if hide {
                 check(set_bool(w.0, ns_string!("AXMinimized"), true))
             } else {
-                let minimized = bool_attr(w.0, ns_string!("AXMinimized"));
-                if !crate::ipc_budget::healthy() {
-                    return Err("Cannot read window state".into());
-                }
-                if minimized {
-                    check(set_bool(w.0, ns_string!("AXMinimized"), false))?;
-                }
-                // AXMain is optional for some dialogs, while raising is required.
-                // Keep its native failure out of the required-action outcome.
-                set_bool_tracking(w.0, ns_string!("AXMain"), true, false);
-                check(action(w.0, ns_string!("AXRaise")))?;
                 let mut pid = 0;
                 unsafe extern "C" {
                     fn AXUIElementGetPid(el: Ref, pid: *mut i32) -> i32;
@@ -363,7 +614,23 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 if error != 0 {
                     return Err(format!("Cannot identify window owner: AX {error}"));
                 }
-                check(activate_pid(pid))
+                // Start the app's unhide/focus transition before AX restore or
+                // raise. A late AX reply must not prevent app activation.
+                check(activate_pid(pid))?;
+                let minimized = bool_attr(w.0, ns_string!("AXMinimized"));
+                if !crate::ipc_budget::healthy() {
+                    return Err("Cannot read window state".into());
+                }
+                if minimized {
+                    check(set_bool(w.0, ns_string!("AXMinimized"), false))?;
+                }
+                // Utility panels cannot become main windows. Asking them to do
+                // so can redirect activation to their owner's main window.
+                if text_attr(w.0, ns_string!("AXSubrole")) == "AXStandardWindow" {
+                    set_bool_tracking(w.0, ns_string!("AXMain"), true, false);
+                }
+                check(action(w.0, ns_string!("AXRaise")))?;
+                Ok(())
             }
         }
         Command::Minimize(id) => {
@@ -394,13 +661,13 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 // Restore animation can temporarily reject read-only AX queries.
                 // The worker bounds this wait and never repeats AXPress.
                 if matches!(command, Command::CloseRestored(_)) {
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
                 return Err("Cannot read window close controls".into());
             }
             if unavailable {
                 if matches!(command, Command::CloseRestored(_)) {
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
                 let minimized = bool_attr(w.0, ns_string!("AXMinimized"));
                 if !crate::ipc_budget::healthy() {
@@ -408,22 +675,18 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
                 }
                 if minimized {
                     check(set_bool(w.0, ns_string!("AXMinimized"), false))?;
-                    return Ok(Some(id));
+                    return Ok(Some(DeferredClose::Window(id)));
                 }
             }
             let button = button.ok_or("Window has no accessible close button")?;
             check(action(button.0, ns_string!("AXPress")))
         }
         Command::Hide(pid) | Command::Quit(pid) => {
-            let app: Option<Retained<AnyObject>> = unsafe {
-                msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationWithProcessIdentifier:pid]
-            };
-            let app = app.ok_or("Application is no longer running")?;
-            check(unsafe {
-                match command {
-                    Command::Hide(_) => msg_send![&*app, hide],
-                    _ => msg_send![&*app, terminate],
-                }
+            let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                .ok_or("Application is no longer running")?;
+            check(match command {
+                Command::Hide(_) => app.hide(),
+                _ => app.terminate(),
             })
         }
         Command::Resize(id, max_y) => {
@@ -459,6 +722,11 @@ fn execute(command: Command, elements: &HashMap<u32, Owned>) -> Result<Option<u3
 }
 fn activate_pid(pid: i32) -> bool {
     NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|app| {
+        // An already active app needs only its window or native tab raised.
+        // macOS can reject a redundant app-activation request during tab changes.
+        if app.isActive() {
+            return true;
+        }
         let source = NSRunningApplication::currentApplication();
         let options = NSApplicationActivationOptions::empty();
         // Only an active source can yield focus. Taskbar panels normally keep
@@ -536,20 +804,13 @@ fn walk_apps(
     }
 }
 pub fn open_url(url: &str) {
-    let ws: Retained<AnyObject> =
-        unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-    if let Some(u) = NSURL::URLWithString(&NSString::from_str(url)) {
-        unsafe {
-            let _: bool = msg_send![&*ws,openURL:&*u];
-        }
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
     }
 }
 pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
-    let ws: Retained<AnyObject> =
-        unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-    let url: Option<Retained<NSURL>> = unsafe {
-        msg_send![&*ws,URLForApplicationWithBundleIdentifier:&*NSString::from_str(bundle)]
-    };
+    let workspace = NSWorkspace::sharedWorkspace();
+    let url = workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle));
     let Some(url) = url else {
         return Err("Application is no longer installed".into());
     };
@@ -568,9 +829,9 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
             return Ok(());
         }
         if private {
-            let running: Retained<NSArray<AnyObject>> = unsafe {
-                msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationsWithBundleIdentifier:&*NSString::from_str(bundle)]
-            };
+            let running = NSRunningApplication::runningApplicationsWithBundleIdentifier(
+                &NSString::from_str(bundle),
+            );
             if !running.is_empty() {
                 // Do not silently turn a failed private action into a normal window.
                 return Err("Could not open the requested private window".into());
@@ -586,9 +847,7 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
                 return Ok(());
             }
-            unsafe {
-                let _: bool = msg_send![&*ws,openURL:&*url];
-            }
+            workspace.openURL(&url);
             // A cold Safari launch must expose its menu before AX can invoke
             // New Private Window. This wait belongs to the separate launch worker.
             for _ in 0..10 {
@@ -602,7 +861,7 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
     }
     let options = 0usize;
     unsafe {
-        let opened: Option<Retained<AnyObject>> = msg_send![&*ws,openURL:&*url, options:options, configuration: &*objc2_foundation::NSDictionary::<NSString,AnyObject>::new(), error:std::ptr::null_mut::<*mut AnyObject>()];
+        let opened: Option<Retained<AnyObject>> = msg_send![&*workspace,openURL:&*url, options:options, configuration: &*objc2_foundation::NSDictionary::<NSString,AnyObject>::new(), error:std::ptr::null_mut::<*mut AnyObject>()];
         opened
             .map(|_| ())
             .ok_or_else(|| "Application launch failed".into())
@@ -612,13 +871,12 @@ fn new_window(bundle: &str, key: &str, modifiers: i64) -> bool {
     if !trusted() {
         return false;
     }
-    let running: Retained<NSArray<AnyObject>> = unsafe {
-        msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationsWithBundleIdentifier:&*NSString::from_str(bundle)]
-    };
+    let running =
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle));
     let Some(app) = running.firstObject() else {
         return false;
     };
-    let pid: i32 = unsafe { msg_send![&*app, processIdentifier] };
+    let pid = app.processIdentifier();
     activate_pid(pid);
     let Some(ax) = (unsafe { Owned::from_create(AXUIElementCreateApplication(pid)) }) else {
         return false;
@@ -649,7 +907,7 @@ fn new_window(bundle: &str, key: &str, modifiers: i64) -> bool {
             return action(el, ns_string!("AXPress"));
         }
         if let Some(children) = attr(el, ns_string!("AXChildren")) {
-            for c in array(children.0) {
+            for c in array(&children) {
                 if visit(c, depth + 1, budget, started, key, modifiers) {
                     return true;
                 }
@@ -898,64 +1156,15 @@ pub(crate) fn check_fixture_activation(pid: i32) -> bool {
         objc2::MainThreadMarker::new().expect("main thread"),
     );
     app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
-    autoreleasepool(|_| {
-        let mut elements = HashMap::new();
-        let initial = scan(&mut elements);
-        let ids: Vec<_> = initial
-            .windows
-            .iter()
-            .filter(|w| {
-                w.pid == pid
-                    && w.bundle == "io.sharif.taskbarrust.interactionfixture"
-                    && !w.minimized
-            })
-            .map(|w| w.id)
-            .take(2)
-            .collect();
-        let inactive_source = !NSRunningApplication::currentApplication().isActive();
-        let mut successes = 0;
-        let mut max_ms = 0.0f64;
-        let mut error = None;
-        if ids.len() == 2 {
-            for id in ids.iter().cycle().take(4) {
-                let started = Instant::now();
-                let (result, status) = crate::ipc_budget::run(Duration::from_millis(160), || {
-                    execute(Command::Activate(*id, false), &elements)
-                });
-                if let Err(message) = result {
-                    error = Some(format!("{message}: {status:?}"));
-                    break;
-                }
-                loop {
-                    objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
-                        &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.02),
-                    );
-                    let snapshot = scan(&mut elements);
-                    let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
-                        .frontmostApplication()
-                        .is_some_and(|app| app.processIdentifier() == pid);
-                    if frontmost && snapshot.windows.iter().any(|w| w.id == *id && w.focused) {
-                        successes += 1;
-                        max_ms = max_ms.max(started.elapsed().as_secs_f64() * 1000.0);
-                        break;
-                    }
-                    if started.elapsed() > Duration::from_secs(2) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
-        let passed = inactive_source && successes == 4;
-        drop(elements);
-        println!(
-            "{}",
-            serde_json::json!({"passed":passed,"inactive_sender":inactive_source,
-            "fixture_windows":ids.len(),"activation_successes":successes,"max_ms":max_ms,
-            "error":error,"cf_live":cf_counts().0})
-        );
-        passed
-    })
+    service::check_fixture_activation(pid)
+}
+
+pub(crate) fn check_fixture_related(pid: i32) -> bool {
+    let app = objc2_app_kit::NSApplication::sharedApplication(
+        objc2::MainThreadMarker::new().expect("main thread"),
+    );
+    app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    service::check_fixture_related(pid)
 }
 
 /// Close only a minimized window from the named disposable QA application.
@@ -1057,6 +1266,63 @@ pub(crate) fn check_fixture_close(pid: i32) -> bool {
 mod native_key_tests {
     use super::*;
     use objc2_foundation::{NSDictionary, NSNumber, ns_string};
+
+    #[test]
+    fn native_strings_preserve_unicode_nuls_and_the_size_limit() {
+        autoreleasepool(|_| {
+            for text in [
+                String::new(),
+                "東京 👩🏽‍💻".into(),
+                "a\0b".into(),
+                "x".repeat(127),
+                "x".repeat(128),
+                "x".repeat(32_768),
+                "x".repeat(32_769),
+                "😀".repeat(8_192),
+                "😀".repeat(8_193),
+            ] {
+                let value = NSString::from_str(&text);
+                let expected = if text.len() <= 32_768 {
+                    text.split('\0').next().unwrap()
+                } else {
+                    ""
+                };
+                assert_eq!(string(cf_string(&value)), expected);
+            }
+            assert!(string(std::ptr::null()).is_empty());
+            let number = NSNumber::new_i64(42);
+            assert!(string(std::ptr::from_ref(&*number).cast()).is_empty());
+        });
+    }
+
+    #[test]
+    fn native_arrays_keep_their_owner_and_enforce_the_scan_limit() {
+        autoreleasepool(|_| {
+            let number_value = NSNumber::new_i64(42);
+            // SAFETY: retain these Foundation objects before their original owner drops.
+            let wrong_type =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*number_value).cast()) }.unwrap();
+            assert_eq!(array(&wrong_type).len(), 0);
+
+            let empty = NSArray::<NSNumber>::new();
+            let empty_owner =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*empty).cast()) }.unwrap();
+            assert_eq!(array(&empty_owner).len(), 0);
+
+            let values = vec![number_value; 4_100];
+            let native = NSArray::from_retained_slice(&values);
+            let owner =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*native).cast()) }.unwrap();
+            drop(native);
+            drop(values);
+            let mut elements = array(&owner);
+            assert_eq!(elements.len(), 4_096);
+            assert_eq!(elements.next().map(number), Some(42));
+            assert_eq!(elements.next_back().map(number), Some(42));
+            assert_eq!(elements.len(), 4_094);
+            assert_eq!(elements.map(number).sum::<i64>(), 4_094 * 42);
+        });
+    }
 
     #[test]
     fn native_dictionary_keys_preserve_unicode_and_reject_invalid_inputs() {

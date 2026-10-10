@@ -27,96 +27,53 @@ fn main() {
         eprintln!("{info}");
     }));
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|s| s == "--check-compatibility") {
-        std::process::exit(if macos::compatibility_probe() { 0 } else { 1 });
-    }
-    if args
-        .get(1)
-        .is_some_and(|s| s == "--check-fixture-activation")
-    {
-        let Some(pid) = args.get(2).and_then(|value| value.parse().ok()) else {
-            eprintln!("Pass a disposable native fixture PID.");
-            std::process::exit(2);
-        };
-        std::process::exit(if macos::check_fixture_activation(pid) {
-            0
-        } else {
-            1
-        });
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark-hover") {
-        let Some(fixture) = args.get(3).and_then(|s| s.parse().ok()) else {
-            eprintln!(
-                "--benchmark-hover COUNT FIXTURE_PID requires the disposable interaction fixture"
-            );
-            std::process::exit(1);
-        };
-        if let Err(error) = macos::benchmark_hover(
-            args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20),
-            fixture,
-        ) {
-            eprintln!("{error}");
-            std::process::exit(1);
+    let count = args.get(2).and_then(|s| s.parse::<usize>().ok());
+    let result = match args.get(1).map(String::as_str) {
+        Some("--check-compatibility") => Ok(macos::compatibility_probe()),
+        Some(command @ ("--check-fixture-activation" | "--check-fixture-related")) => {
+            let Some(pid) = args.get(2).and_then(|s| s.parse().ok()) else {
+                eprintln!("Pass a disposable native fixture PID.");
+                std::process::exit(2);
+            };
+            Ok(if command == "--check-fixture-related" {
+                macos::check_fixture_related(pid)
+            } else {
+                macos::check_fixture_activation(pid)
+            })
         }
-        return;
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark-ui") {
-        if let Err(error) =
-            macos::benchmark_ui(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200))
-        {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-    if args
-        .get(1)
-        .is_some_and(|s| s == "--benchmark" || s == "--benchmark-lifecycle")
-    {
-        let ok = macos::benchmark(
-            args.get(2).and_then(|s| s.parse().ok()).unwrap_or(300),
-            args[1] == "--benchmark-lifecycle",
-        );
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark-latency") {
-        let ok = macos::benchmark_latency(
-            args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10),
-            args.get(3).and_then(|s| s.parse().ok()),
-        );
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.get(1).is_some_and(|s| s == "--check-fixture-close") {
-        let ok = args
+        Some("--check-fixture-close") => Ok(args
             .get(2)
             .and_then(|s| s.parse().ok())
-            .is_some_and(macos::check_fixture_close);
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.get(1).is_some_and(|s| s == "--gui-smoke") {
-        if let Err(error) =
-            macos::gui_smoke(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100))
-        {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-    if args.get(1).is_some_and(|s| s == "--probe-updater") {
-        std::process::exit(if macos::probe_updater() { 0 } else { 1 });
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark-discovery") {
-        let ok = macos::benchmark_discovery(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60));
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark-scan") {
-        let ok = macos::benchmark_scan(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500));
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if let Err(e) = macos::run_app() {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+            .is_some_and(macos::check_fixture_close)),
+        Some("--benchmark-hover") => args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| {
+                "--benchmark-hover COUNT FIXTURE_PID requires the disposable interaction fixture"
+                    .to_string()
+            })
+            .and_then(|pid| macos::benchmark_hover(count.unwrap_or(20), pid))
+            .map(|_| true),
+        Some("--benchmark-ui") => macos::benchmark_ui(count.unwrap_or(200)).map(|_| true),
+        Some(command @ ("--benchmark" | "--benchmark-lifecycle")) => Ok(macos::benchmark(
+            count.unwrap_or(300),
+            command == "--benchmark-lifecycle",
+        )),
+        Some("--benchmark-latency") => Ok(macos::benchmark_latency(
+            count.unwrap_or(10) as u64,
+            args.get(3).and_then(|s| s.parse().ok()),
+        )),
+        Some("--benchmark-discovery") => Ok(macos::benchmark_discovery(count.unwrap_or(60) as u64)),
+        Some("--benchmark-scan") => Ok(macos::benchmark_scan(count.unwrap_or(500))),
+        Some("--gui-smoke") => macos::gui_smoke(count.unwrap_or(100)).map(|_| true),
+        Some("--probe-updater") => Ok(macos::probe_updater()),
+        _ => macos::run_app().map(|_| true),
+    };
+    let passed = result.unwrap_or_else(|error| {
+        eprintln!("{error}");
+        false
+    });
+    std::process::exit(if passed { 0 } else { 1 });
 }
 
 #[cfg(not(target_os = "macos"))]

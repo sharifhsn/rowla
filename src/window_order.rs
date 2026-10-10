@@ -2,9 +2,79 @@
 #[cfg(any(target_os = "macos", test))]
 use crate::models::Window;
 #[cfg(any(target_os = "macos", test))]
-use std::{cmp::Reverse, collections::HashMap, time::Instant};
+use std::{
+    cmp::Reverse,
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 pub(crate) const MAX_APPS: usize = 128;
+
+#[cfg(any(target_os = "macos", test))]
+fn tab_owner(w: &Window) -> bool {
+    w.native_tabs && w.on_space && (w.focused || !w.tabbed_hidden)
+}
+#[cfg(any(target_os = "macos", test))]
+fn same_tabs(a: &Window, b: &Window) -> bool {
+    a.pid == b.pid
+        && a.bundle == b.bundle
+        && a.tabs
+            .iter()
+            .any(|t| t.id != 0 && b.tabs.iter().any(|other| t.id == other.id))
+}
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn reconcile(
+    order: &mut Vec<u32>,
+    spaces: &mut HashMap<u32, bool>,
+    previous: &[Window],
+    current: &[Window],
+    reset_space_order: bool,
+    alive: &HashSet<u32>,
+) {
+    let mut inherited = HashSet::new();
+    for old in previous.iter().filter(|w| tab_owner(w)) {
+        if current.iter().any(|w| w.id == old.id && tab_owner(w)) {
+            continue;
+        }
+        let mut matches = current.iter().filter(|w| tab_owner(w) && same_tabs(old, w));
+        let Some(next) = matches.next().filter(|_| matches.next().is_none()) else {
+            continue;
+        };
+        if inherited.contains(&next.id) {
+            continue;
+        }
+        let Some(slot) = order.iter().position(|id| *id == old.id) else {
+            continue;
+        };
+        // AppKit changes the visible NSWindow when it selects a native tab.
+        // Transfer its slot before closed IDs disappear. Shared worker-issued
+        // control IDs prove the group, without title or geometry guesses.
+        if let Some(other) = order.iter().position(|id| *id == next.id) {
+            order.swap(slot, other);
+        } else {
+            order[slot] = next.id;
+        }
+        inherited.extend([old.id, next.id]);
+    }
+    order.retain(|id| alive.contains(id));
+    spaces.retain(|id, _| alive.contains(id));
+    let mut ordered: HashSet<_> = order.iter().copied().collect();
+    for w in current {
+        if reset_space_order
+            && !inherited.contains(&w.id)
+            && spaces.get(&w.id).is_some_and(|old| *old != w.on_space)
+        {
+            ordered.remove(&w.id);
+        }
+        spaces.insert(w.id, w.on_space);
+    }
+    order.retain(|id| ordered.contains(id));
+    for w in current {
+        if ordered.insert(w.id) {
+            order.push(w.id);
+        }
+    }
+}
 
 #[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
@@ -90,6 +160,113 @@ mod tests {
             bundle: app.into(),
             subordinate,
             ..Window::default()
+        }
+    }
+    fn tab_window(id: u32) -> Window {
+        Window {
+            pid: 42,
+            on_space: true,
+            native_tabs: true,
+            tab_count: 2,
+            focused: true,
+            tabs: [101, 102]
+                .into_iter()
+                .map(|id| crate::models::WindowTab {
+                    id,
+                    resolved: true,
+                    ..Default::default()
+                })
+                .collect(),
+            ..window(id, "qa.native-tabs", false)
+        }
+    }
+    fn update(
+        order: &mut Vec<u32>,
+        spaces: &mut HashMap<u32, bool>,
+        old: &[Window],
+        next: &[Window],
+        reset: bool,
+    ) {
+        let alive = next.iter().map(|w| w.id).collect();
+        reconcile(order, spaces, old, next, reset, &alive);
+    }
+    #[test]
+    fn native_tab_replacements_keep_a_manual_slot_in_both_space_modes() {
+        for reset in [false, true] {
+            let mut order = vec![3, 10, 1];
+            let mut spaces = HashMap::from([(3, false), (10, true), (1, false)]);
+            let mut old = vec![window(1, "a", false), window(3, "b", false), tab_window(10)];
+            for id in [11, 10, 11, 10] {
+                let mut next = old.clone();
+                next[2] = tab_window(id);
+                update(&mut order, &mut spaces, &old, &next, reset);
+                assert_eq!(order, [3, id, 1]);
+                assert_eq!(spaces.len(), 3);
+                old = next;
+            }
+        }
+    }
+    #[test]
+    fn retained_inactive_tab_ids_swap_slots_without_duplicates() {
+        let old = vec![
+            tab_window(10),
+            Window {
+                on_space: false,
+                tabbed_hidden: true,
+                focused: false,
+                ..tab_window(11)
+            },
+        ];
+        let mut next = old.clone();
+        next[0].on_space = false;
+        next[0].tabbed_hidden = true;
+        next[0].focused = false;
+        next[1] = tab_window(11);
+        let mut order = vec![10, 11];
+        let mut spaces = HashMap::from([(10, true), (11, false)]);
+        update(&mut order, &mut spaces, &old, &next, true);
+        assert_eq!(order, [11, 10]);
+        update(&mut order, &mut spaces, &next, &old, true);
+        assert_eq!(order, [10, 11]);
+    }
+    #[test]
+    fn a_tab_switch_after_restore_keeps_the_old_slot() {
+        for (hidden, minimized) in [(true, false), (false, true)] {
+            let old = vec![
+                window(1, "a", false),
+                Window {
+                    hidden,
+                    minimized,
+                    focused: false,
+                    ..tab_window(10)
+                },
+                window(3, "b", false),
+            ];
+            let next = vec![old[0].clone(), tab_window(11), old[2].clone()];
+            let mut order = vec![3, 10, 1];
+            update(&mut order, &mut HashMap::new(), &old, &next, true);
+            assert_eq!(order, [3, 11, 1]);
+        }
+    }
+    #[test]
+    fn unrelated_and_ambiguous_tab_groups_do_not_inherit_positions() {
+        let old = vec![window(1, "a", false), tab_window(10), window(3, "b", false)];
+        for replacements in [
+            vec![Window {
+                pid: 99,
+                ..tab_window(11)
+            }],
+            vec![Window {
+                tabs: vec![],
+                ..tab_window(11)
+            }],
+            vec![tab_window(11), tab_window(12)],
+        ] {
+            let mut next = vec![old[0].clone(), old[2].clone()];
+            next.extend(replacements);
+            let mut order = vec![1, 10, 3];
+            update(&mut order, &mut HashMap::new(), &old, &next, false);
+            assert_eq!(order[..2], [1, 3]);
         }
     }
     #[test]
