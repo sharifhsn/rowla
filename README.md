@@ -11,10 +11,10 @@ Built for people who keep many windows open and want a predictable place to find
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS 15.2+](https://img.shields.io/badge/macOS-15.2%2B-black.svg)](USER_GUIDE.md#requirements)
 
-[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.2.0-beta.2/Rowla-0.2.0-beta.2-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
+[**Download the Apple Silicon beta**](https://github.com/sharifhsn/rowla/releases/download/v0.2.0-beta.3/Rowla-0.2.0-beta.3-macos-arm64.zip) · [User guide](USER_GUIDE.md) · [Ask a question](https://github.com/sharifhsn/rowla/discussions) · [Contribute](CONTRIBUTING.md)
 
-> **Beta:** macOS 15.2+ and Apple Silicon. The download uses a development certificate and has no Apple notarization.
-> macOS can require **Open Anyway** on first launch. Updates use manual downloads.
+> **Beta:** macOS 15.2+ and Apple Silicon. The download uses Developer ID and Apple notarization.
+> Updates use manual downloads. Accessibility and Screen Recording permissions still apply.
 
 [macOS compatibility](docs/COMPATIBILITY.md) · [Full capabilities and limits](docs/CAPABILITIES.md)
 
@@ -46,15 +46,15 @@ Read the [macOS feature assessment](docs/MACOS_FEATURE_RESEARCH.md) for the API 
 1. Download the beta ZIP and extract `Rowla.app`.
 2. Move the app to Applications.
 3. Open Rowla.
-4. If macOS blocks it, use **System Settings → Privacy & Security → Open Anyway** for Rowla.
+4. Confirm **Open** if macOS asks about the downloaded app.
 5. Grant **Accessibility** access for window controls.
 6. For thumbnails, grant **Screen Recording** access.
 7. Quit and reopen Rowla if macOS requests it after a permission change.
 
-[Apple describes Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Keep Gatekeeper and SIP enabled.
+Keep Gatekeeper and SIP enabled. Earlier beta downloads use a development certificate and can require **Open Anyway**.
 Use the menu-bar icon for Preferences or Quit. Start at login and automatic window resizing are off for fresh preferences.
 
-[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.2.0-beta.2) · [Installation help](docs/SUPPORT.md#first-launch-problems)
+[Release notes and checksums](https://github.com/sharifhsn/rowla/releases/tag/v0.2.0-beta.3) · [Installation help](docs/SUPPORT.md#first-launch-problems)
 
 ## Privacy and resources
 
@@ -95,7 +95,7 @@ A fresh checkout uses an ad-hoc signature and needs no Apple Developer membershi
 Changed ad-hoc builds can need new permission grants. See [local certificates](docs/RELEASE.md#local-signatures-and-permissions) for repeated builds.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and native tests. Linux supports the portable library checks, not the macOS app.
-The [release tag](https://github.com/sharifhsn/rowla/tree/v0.2.0-beta.2) preserves the shipped source.
+The [release tag](https://github.com/sharifhsn/rowla/tree/v0.2.0-beta.3) preserves the shipped source.
 The original beta and its source tag remain available in the release history.
 
 <details>
