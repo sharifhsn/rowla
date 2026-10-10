@@ -639,14 +639,12 @@ fn engine(rx: mpsc::Receiver<Command>) {
                             s.stop()?;
                         }
                         session = None;
-                        snapshot = Some(PendingSnapshot::start(&request).inspect_err(|error| {
-                            listing_stalled = error == "Window listing timed out";
-                        })?);
-                        let result = snapshot
-                            .as_ref()
-                            .unwrap()
-                            .rx
-                            .recv_timeout(Duration::from_secs(5));
+                        let pending = snapshot.insert(
+                            PendingSnapshot::start(&request).inspect_err(|error| {
+                                listing_stalled = error == "Window listing timed out";
+                            })?,
+                        );
+                        let result = pending.rx.recv_timeout(Duration::from_secs(5));
                         return match result {
                             Ok(result) => {
                                 snapshot = None;
@@ -657,21 +655,19 @@ fn engine(rx: mpsc::Receiver<Command>) {
                                 Err("Screenshot callback disconnected".into())
                             }
                             Err(mpsc::RecvTimeoutError::Timeout) => {
-                                snapshot
-                                    .as_ref()
-                                    .unwrap()
-                                    .enabled
-                                    .store(false, Ordering::Release);
+                                pending.enabled.store(false, Ordering::Release);
                                 NATIVE_UNCERTAIN.store(true, Ordering::Relaxed);
                                 Err("Screenshot operation timed out".into())
                             }
                         };
                     }
-                    if session.as_ref().is_some_and(|s| {
-                        s.id != request.id || s.width != request.width || s.height != request.height
-                    }) {
+                    if let Some(current) = &mut session
+                        && (current.id != request.id
+                            || current.width != request.width
+                            || current.height != request.height)
+                    {
                         // Finish stopping before creating another session: never overlap capture sources.
-                        session.as_mut().unwrap().stop()?;
+                        current.stop()?;
                         session = None;
                     }
                     if session.is_none() {

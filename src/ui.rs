@@ -254,47 +254,143 @@ struct DelegateIvars {
     state: Shared,
 }
 define_class!(
- #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=DelegateIvars] #[name = "TaskbarRustDelegate"] struct Delegate;
- unsafe impl NSObjectProtocol for Delegate {}
- unsafe impl NSTextFieldDelegate for Delegate {}
- unsafe impl NSSearchFieldDelegate for Delegate {}
- unsafe impl NSControlTextEditingDelegate for Delegate {
-  #[unsafe(method(control:textView:doCommandBySelector:))]
-  unsafe fn search_command(&self,_control:&NSControl,_view:&NSTextView,command:Sel)->bool {
-   if command==sel!(moveDown:){move_start_selection(&self.ivars().state,1);true}
-   else if command==sel!(moveUp:){move_start_selection(&self.ivars().state,-1);true}
-   else if command==sel!(insertNewline:){activate_start_selection(&self.ivars().state);true}
-   else if command==sel!(cancelOperation:){if let Some(m)=self.ivars().state.borrow_mut().start.take(){m.panel.close();}true}
-   else{false}
-  }
- }
- unsafe impl NSApplicationDelegate for Delegate {
-  #[unsafe(method(applicationDidFinishLaunching:))]
-  fn launched(&self,_n:&NSNotification){let s=&self.ivars().state;
-   initialize_preview(s);hover_close::install(s);if s.borrow().gui_smoke.is_none(){s.borrow().command(Command::Dock(s.borrow().config.fully_hide_dock));}let timer=unsafe{NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(0.1,self,sel!(tick:),None,true)};s.borrow_mut().timer=Some(timer);render(s);
-   if s.borrow().gui_smoke.is_none(){let enabled=s.borrow().config.start_at_login;if let Err(e)=platform::login(enabled){s.borrow_mut().error=e;}}
-  }
-  #[unsafe(method(applicationWillTerminate:))]
-  fn terminating(&self,_n:&NSNotification){let mut s=self.ivars().state.borrow_mut();if let Some(t)=s.timer.take(){t.invalidate();}
-   if let Some(t)=s.interaction_timer.take(){t.invalidate();}s.hover_close.take();crate::runtime::stop();let _=s.tx.try_send(Command::Stop);if s.gui_smoke.is_none(){if let Err(e)=s.config.save(){s.error=e;}let _=crate::dock::shutdown_restore();}crate::capture::shutdown();}
-  #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
-  fn reopen(&self,_a:&NSApplication,_v:bool)->bool{show_preferences(&self.ivars().state,0);true}
-  #[unsafe(method(application:openURLs:))]
-  fn open_urls(&self,_app:&NSApplication,urls:&NSArray<NSURL>){
-   for url in urls {
-    if let Some(url)=url.absoluteString() && let Some(action)=crate::system_actions::SystemAction::from_url(&url.to_string()) {
-     system_action(&self.ivars().state,action);
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DelegateIvars]
+    #[name = "TaskbarRustDelegate"]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+    unsafe impl NSTextFieldDelegate for Delegate {}
+    unsafe impl NSSearchFieldDelegate for Delegate {}
+
+    unsafe impl NSControlTextEditingDelegate for Delegate {
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        unsafe fn search_command(
+            &self,
+            _control: &NSControl,
+            _view: &NSTextView,
+            command: Sel,
+        ) -> bool {
+            let state = &self.ivars().state;
+            if command == sel!(moveDown:) {
+                move_start_selection(state, 1);
+                true
+            } else if command == sel!(moveUp:) {
+                move_start_selection(state, -1);
+                true
+            } else if command == sel!(insertNewline:) {
+                activate_start_selection(state);
+                true
+            } else if command == sel!(cancelOperation:) {
+                if let Some(menu) = state.borrow_mut().start.take() {
+                    menu.panel.close();
+                }
+                true
+            } else {
+                false
+            }
+        }
     }
-   }
-  }
- }
- impl Delegate {
-  #[unsafe(method(tick:))] fn tick(&self,_t:&NSTimer){tick(&self.ivars().state);}
-  #[unsafe(method(interactionTick:))] fn interaction_tick(&self,_t:&NSTimer){autoreleasepool(|_| interaction_tick(&self.ivars().state));}
-  #[unsafe(method(menuAction:))] fn menu_action(&self,sender:&NSMenuItem){if let Some(o)=sender.representedObject()&& let Some(s)=o.downcast_ref::<NSString>()&& let Ok(a)=serde_json::from_str(&s.to_string()){dispatch(&self.ivars().state,a);}}
-  #[unsafe(method(statusAction:))] fn status_action(&self,_s:&AnyObject){show_preferences(&self.ivars().state,0);}
-  #[unsafe(method(startSearch:))] fn start_search(&self,_field:&NSSearchField){activate_start_selection(&self.ivars().state);}
- }
+
+    unsafe impl NSApplicationDelegate for Delegate {
+        #[unsafe(method(applicationDidFinishLaunching:))]
+        fn launched(&self, _notification: &NSNotification) {
+            let state = &self.ivars().state;
+            initialize_preview(state);
+            hover_close::install(state);
+            if state.borrow().gui_smoke.is_none() {
+                state.borrow().command(Command::Dock(state.borrow().config.fully_hide_dock));
+            }
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    0.1,
+                    self,
+                    sel!(tick:),
+                    None,
+                    true,
+                )
+            };
+            state.borrow_mut().timer = Some(timer);
+            render(state);
+            if state.borrow().gui_smoke.is_none() {
+                let enabled = state.borrow().config.start_at_login;
+                if let Err(error) = platform::login(enabled) {
+                    state.borrow_mut().error = error;
+                }
+            }
+        }
+
+        #[unsafe(method(applicationWillTerminate:))]
+        fn terminating(&self, _notification: &NSNotification) {
+            let mut state = self.ivars().state.borrow_mut();
+            if let Some(timer) = state.timer.take() {
+                timer.invalidate();
+            }
+            if let Some(timer) = state.interaction_timer.take() {
+                timer.invalidate();
+            }
+            state.hover_close.take();
+            crate::runtime::stop();
+            let _ = state.tx.try_send(Command::Stop);
+            if state.gui_smoke.is_none() {
+                if let Err(error) = state.config.save() {
+                    state.error = error;
+                }
+                let _ = crate::dock::shutdown_restore();
+            }
+            crate::capture::shutdown();
+        }
+
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            show_preferences(&self.ivars().state, 0);
+            true
+        }
+
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            for url in urls {
+                if let Some(url) = url.absoluteString()
+                    && let Some(action) = crate::system_actions::SystemAction::from_url(&url.to_string())
+                {
+                    system_action(&self.ivars().state, action);
+                }
+            }
+        }
+    }
+
+    impl Delegate {
+        #[unsafe(method(tick:))]
+        fn tick(&self, _timer: &NSTimer) {
+            tick(&self.ivars().state);
+        }
+
+        #[unsafe(method(interactionTick:))]
+        fn interaction_tick(&self, _timer: &NSTimer) {
+            autoreleasepool(|_| interaction_tick(&self.ivars().state));
+        }
+
+        #[unsafe(method(menuAction:))]
+        fn menu_action(&self, sender: &NSMenuItem) {
+            if let Some(object) = sender.representedObject()
+                && let Some(text) = object.downcast_ref::<NSString>()
+                && let Ok(action) = serde_json::from_str(&text.to_string())
+            {
+                dispatch(&self.ivars().state, action);
+            }
+        }
+
+        #[unsafe(method(statusAction:))]
+        fn status_action(&self, _sender: &AnyObject) {
+            show_preferences(&self.ivars().state, 0);
+        }
+
+        #[unsafe(method(startSearch:))]
+        fn start_search(&self, _field: &NSSearchField) {
+            activate_start_selection(&self.ivars().state);
+        }
+    }
 );
 impl Delegate {
     fn new(m: MainThreadMarker, state: Shared) -> Retained<Self> {
@@ -325,39 +421,207 @@ struct ButtonIvars {
     profile_badge: RefCell<Option<Retained<NSImage>>>,
 }
 define_class!(
- #[unsafe(super=NSButton)] #[thread_kind=MainThreadOnly] #[ivars=ButtonIvars] #[name = "TaskbarRustActionButton"] struct ActionButton;
- unsafe impl NSObjectProtocol for ActionButton {}
- impl ActionButton {
-  #[unsafe(method(drawRect:))] fn draw(&self,r:NSRect){
-   let focused=self.ivars().window_style.get().is_some_and(|style|style.focused);
-   let selected=self.ivars().start_index.get().is_some_and(|index|self.ivars().state.upgrade().is_some_and(|s|s.try_borrow().ok().is_some_and(|s|s.start.as_ref().is_some_and(|m|m.selected==index))));
-   let bubble=matches!(self.ivars().action,Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_));
-   if bubble{let color=if focused{NSColor::controlAccentColor()}else{NSColor::secondaryLabelColor()};color.colorWithAlphaComponent(if self.ivars().hovered.get(){0.28}else{0.15}).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),self.bounds().size.height/2.0,self.bounds().size.height/2.0).fill();}
-   else if focused||selected{NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(),4.0,4.0).fill();}
-   NSGraphicsContext::saveGraphicsState_class();
-   let inset=self.ivars().reserved_width.get();
-   if inset>0.0{NSBezierPath::bezierPathWithRect(rect(0.0,0.0,(self.bounds().size.width-inset).max(0.0),self.bounds().size.height)).addClip();}
-   if inset>0.0&&let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(0.0,0.0,(self.bounds().size.width-inset).max(0.0),self.bounds().size.height),self);}
-   else{unsafe{let _:()=msg_send![super(self),drawRect:r];}}
-   NSGraphicsContext::restoreGraphicsState_class();
-   chrome_profiles::draw(self);
-   if self.ivars().badge.get(){NSColor::systemRedColor().set();let bounds=self.bounds();NSBezierPath::bezierPathWithOvalInRect(rect(bounds.size.width-self.ivars().reserved_width.get()-9.0,bounds.size.height-9.0,6.0,6.0)).fill();}
-  }
-  #[unsafe(method(pressed:))] fn pressed(&self,_sender:&AnyObject){if let Some(s)=self.ivars().state.upgrade(){dispatch(&s,self.ivars().action.clone());}}
-  #[unsafe(method(acceptsFirstMouse:))] fn accepts_first_mouse(&self,_e:Option<&NSEvent>)->bool{true}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();self.ivars().hovered.set(true);NSView::setNeedsDisplay(self,true);if let Some(s)=self.ivars().state.upgrade(){match self.ivars().action {Action::Window(id)|Action::Bubble(id)=>if let Some(win)=self.window(){let r=win.convertRectToScreen(self.convertRect_toView(self.bounds(),None));begin_hover(&s,id,win.windowNumber(),r);},Action::Tab(..)=>{hide_preview(&s);s.borrow_mut().hover=None;},_=>{}}}}
-  #[unsafe(method(mouseExited:))] fn exited(&self,_e:&NSEvent){self.ivars().hovered.set(false);NSView::setNeedsDisplay(self,true);if let Some(s)=self.ivars().state.upgrade()&& let Ok(mut s)=s.try_borrow_mut()&& matches!(self.ivars().action,Action::Window(id)|Action::Bubble(id) if s.hover.is_some_and(|h|h.0==id)){s.hover=None;}}
-  #[unsafe(method(rightMouseDown:))] fn right_down(&self,e:&NSEvent){if let Some(s)=self.ivars().state.upgrade(){let m=context_menu(&s,Some(&self.ivars().action));{NSMenu::popUpContextMenu_withEvent_forView(&m,e,self);}}}
-  #[unsafe(method(otherMouseDown:))] fn other_down(&self,e:&NSEvent){if e.buttonNumber()==2&& let Some(s)=self.ivars().state.upgrade()&& s.borrow().config.middle_closes{match self.ivars().action {Action::Window(id)|Action::Bubble(id)=>dispatch(&s,Action::Close(id)),Action::Tab(id,index)=>dispatch(&s,Action::CloseTab(id,index)),_=>{}}}}
-  #[unsafe(method(mouseDown:))] fn down(&self,e:&NSEvent){NSCursor::arrowCursor().set();if !self.isEnabled(){return;}self.ivars().drag.set(Some(e.locationInWindow()));self.ivars().dragged.set(false);self.highlight(true);}
-  #[unsafe(method(mouseDragged:))] fn dragged(&self,e:&NSEvent){NSCursor::arrowCursor().set();if self.can_drag()&& let Some(start)=self.ivars().drag.get(){let p=e.locationInWindow();if (p.x-start.x).abs()>5.0||(p.y-start.y).abs()>5.0{self.ivars().dragged.set(true);}}}
-  #[unsafe(method(mouseUp:))] fn up(&self,e:&NSEvent){NSCursor::arrowCursor().set();self.highlight(false);if self.ivars().drag.take().is_none()||!self.isEnabled(){return;}
-   if let Some(s)=self.ivars().state.upgrade(){let reordered=self.ivars().dragged.replace(false)&&reorder(&s,&self.ivars().action,e.locationInWindow().x,self.window().map(|w|w.windowNumber()).unwrap_or(0));if !reordered&& contains(self.bounds(),self.convertPoint_fromView(e.locationInWindow(),None)){dispatch(&s,self.ivars().action.clone());}}}
- }
+    #[unsafe(super = NSButton)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ButtonIvars]
+    #[name = "TaskbarRustActionButton"]
+    struct ActionButton;
+
+    unsafe impl NSObjectProtocol for ActionButton {}
+
+    impl ActionButton {
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, dirty: NSRect) {
+            let ivars = self.ivars();
+            let bounds = self.bounds();
+            let focused = ivars.window_style.get().is_some_and(|style| style.focused);
+            let selected = ivars.start_index.get().is_some_and(|index| {
+                ivars.state.upgrade().is_some_and(|state| {
+                    state.try_borrow().ok().is_some_and(|state| {
+                        state.start.as_ref().is_some_and(|menu| menu.selected == index)
+                    })
+                })
+            });
+            let bubble = matches!(
+                ivars.action,
+                Action::Bubble(_) | Action::Tab(..) | Action::RelatedMore(_)
+            );
+            if bubble {
+                let color = if focused {
+                    NSColor::controlAccentColor()
+                } else {
+                    NSColor::secondaryLabelColor()
+                };
+                color
+                    .colorWithAlphaComponent(if ivars.hovered.get() { 0.28 } else { 0.15 })
+                    .set();
+                let radius = bounds.size.height / 2.0;
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).fill();
+            } else if focused || selected {
+                NSColor::controlAccentColor().colorWithAlphaComponent(0.3).set();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, 4.0, 4.0).fill();
+            }
+            NSGraphicsContext::saveGraphicsState_class();
+            let inset = ivars.reserved_width.get();
+            let content = rect(0.0, 0.0, (bounds.size.width - inset).max(0.0), bounds.size.height);
+            if inset > 0.0 {
+                NSBezierPath::bezierPathWithRect(content).addClip();
+            }
+            if inset > 0.0 && let Some(cell) = self.cell() {
+                cell.drawWithFrame_inView(content, self);
+            } else {
+                unsafe {
+                    let _: () = msg_send![super(self), drawRect: dirty];
+                }
+            }
+            NSGraphicsContext::restoreGraphicsState_class();
+            chrome_profiles::draw(self);
+            if ivars.badge.get() {
+                NSColor::systemRedColor().set();
+                NSBezierPath::bezierPathWithOvalInRect(rect(
+                    bounds.size.width - inset - 9.0,
+                    bounds.size.height - 9.0,
+                    6.0,
+                    6.0,
+                )).fill();
+            }
+        }
+
+        #[unsafe(method(pressed:))]
+        fn pressed(&self, _sender: &AnyObject) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                dispatch(&state, self.ivars().action.clone());
+            }
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.ivars().hovered.set(true);
+            NSView::setNeedsDisplay(self, true);
+            let Some(state) = self.ivars().state.upgrade() else {
+                return;
+            };
+            match self.ivars().action {
+                Action::Window(id) | Action::Bubble(id) => {
+                    if let Some(window) = self.window() {
+                        let frame = window.convertRectToScreen(self.convertRect_toView(self.bounds(), None));
+                        begin_hover(&state, id, window.windowNumber(), frame);
+                    }
+                }
+                Action::Tab(..) => {
+                    hide_preview(&state);
+                    state.borrow_mut().hover = None;
+                }
+                _ => {}
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn exited(&self, _event: &NSEvent) {
+            self.ivars().hovered.set(false);
+            NSView::setNeedsDisplay(self, true);
+            if let Some(state) = self.ivars().state.upgrade()
+                && let Ok(mut state) = state.try_borrow_mut()
+                && matches!(self.ivars().action, Action::Window(id) | Action::Bubble(id) if state.hover.is_some_and(|hover| hover.0 == id))
+            {
+                state.hover = None;
+            }
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_down(&self, event: &NSEvent) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let menu = context_menu(&state, Some(&self.ivars().action));
+                NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+            }
+        }
+
+        #[unsafe(method(otherMouseDown:))]
+        fn other_down(&self, event: &NSEvent) {
+            if event.buttonNumber() == 2
+                && let Some(state) = self.ivars().state.upgrade()
+                && state.borrow().config.middle_closes
+            {
+                match self.ivars().action {
+                    Action::Window(id) | Action::Bubble(id) => dispatch(&state, Action::Close(id)),
+                    Action::Tab(id, index) => dispatch(&state, Action::CloseTab(id, index)),
+                    _ => {}
+                }
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn down(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            if !self.isEnabled() {
+                return;
+            }
+            self.ivars().drag.set(Some(event.locationInWindow()));
+            self.ivars().dragged.set(false);
+            self.highlight(true);
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn dragged(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            if self.can_drag() && let Some(start) = self.ivars().drag.get() {
+                let point = event.locationInWindow();
+                if (point.x - start.x).abs() > 5.0 || (point.y - start.y).abs() > 5.0 {
+                    self.ivars().dragged.set(true);
+                }
+            }
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn up(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.highlight(false);
+            if self.ivars().drag.take().is_none() || !self.isEnabled() {
+                return;
+            }
+            let Some(state) = self.ivars().state.upgrade() else {
+                return;
+            };
+            let reordered = self.ivars().dragged.replace(false)
+                && reorder(
+                    &state,
+                    &self.ivars().action,
+                    event.locationInWindow().x,
+                    self.window().map_or(0, |window| window.windowNumber()),
+                );
+            if !reordered
+                && contains(self.bounds(), self.convertPoint_fromView(event.locationInWindow(), None))
+            {
+                dispatch(&state, self.ivars().action.clone());
+            }
+        }
+    }
 );
 impl ActionButton {
     fn set_window_focus(&self, focused: bool, font_size: f64) {
@@ -387,34 +651,37 @@ impl ActionButton {
     fn new(s: &Shared, action: Action, title: &str, r: NSRect) -> Retained<Self> {
         s.borrow_mut().performance.buttons_created += 1;
         let m = MainThreadMarker::new().unwrap();
-        let b: Retained<Self> = unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(ButtonIvars{state:Rc::downgrade(s),action,drag:Cell::new(None),dragged:Cell::new(false),start_index:Cell::new(None),badge:Cell::new(false),window_style:Cell::new(None),reserved_width:Cell::new(0.0),related_ids:RefCell::new(Vec::new()),hovered:Cell::new(false),profile_badge:RefCell::new(None)})),initWithFrame:r]
+        let ivars = ButtonIvars {
+            state: Rc::downgrade(s),
+            action,
+            drag: Cell::new(None),
+            dragged: Cell::new(false),
+            start_index: Cell::new(None),
+            badge: Cell::new(false),
+            window_style: Cell::new(None),
+            reserved_width: Cell::new(0.0),
+            related_ids: RefCell::new(Vec::new()),
+            hovered: Cell::new(false),
+            profile_badge: RefCell::new(None),
         };
+        let b: Retained<Self> =
+            unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] };
         b.setTitle(&NSString::from_str(title));
-        let accessible = if matches!(b.ivars().action, Action::Start(_)) {
-            "Start".into()
-        } else if matches!(b.ivars().action, Action::Sort) {
-            "Sort windows".into()
-        } else if matches!(b.ivars().action, Action::ClosePreview) {
-            "Close previewed window".into()
-        } else if title.is_empty() {
-            match &b.ivars().action {
-                Action::Pin(bundle, _) => s
-                    .borrow()
-                    .apps
-                    .iter()
-                    .find(|a| a.bundle == *bundle)
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| bundle.clone()),
-                Action::Start(_) => "Start".into(),
-                _ => "Taskbar action".into(),
-            }
-        } else {
-            title.into()
+        let accessible = match &b.ivars().action {
+            Action::Start(_) => "Start".into(),
+            Action::Sort => "Sort windows".into(),
+            Action::ClosePreview => "Close previewed window".into(),
+            Action::Pin(bundle, _) if title.is_empty() => s
+                .borrow()
+                .apps
+                .iter()
+                .find(|app| app.bundle == *bundle)
+                .map(|app| app.name.clone())
+                .unwrap_or_else(|| bundle.clone()),
+            _ if title.is_empty() => "Taskbar action".into(),
+            _ => title.into(),
         };
-        unsafe {
-            let _: () = msg_send![&*b,setAccessibilityLabel:&*NSString::from_str(&accessible)];
-        }
+        b.setAccessibilityLabel(Some(&NSString::from_str(&accessible)));
         if matches!(
             b.ivars().action,
             Action::Window(_) | Action::Pin(..) | Action::Start(_)
@@ -462,51 +729,157 @@ struct BarIvars {
     display: u32,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
 }
-define_class!(
- #[unsafe(super=NSView)] #[thread_kind=MainThreadOnly] #[ivars=BarIvars] #[name = "TaskbarRustBarView"] struct BarView;
- unsafe impl NSObjectProtocol for BarView {}
- impl BarView {
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(updateTrackingAreas))] fn update_tracking_areas(&self){update_arrow_tracking(self,&self.ivars().tracking);unsafe{let _:()=msg_send![super(self),updateTrackingAreas];}}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(rightMouseDown:))] fn right_down(&self,e:&NSEvent){if let Some(s)=self.ivars().state.upgrade(){let m=context_menu(&s,Some(&Action::HideBar(self.ivars().display,false)));{NSMenu::popUpContextMenu_withEvent_forView(&m,e,self);}}}
-  #[unsafe(method(scrollWheel:))] fn scroll(&self,e:&NSEvent){NSCursor::arrowCursor().set();if let Some(s)=self.ivars().state.upgrade(){let hide={let s=s.borrow();(e.scrollingDeltaY()<0.0&&s.config.scroll_down_hides)||(e.scrollingDeltaY()>0.0&&s.config.scroll_up_hides)};if hide{dispatch(&s,Action::HideBar(self.ivars().display,true));}}}
- }
-);
-impl BarView {
-    fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
-        let m = MainThreadMarker::new().unwrap();
-        unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(BarIvars{state:Rc::downgrade(s),display:d,tracking:RefCell::new(None)})),initWithFrame:r]
+impl BarIvars {
+    fn scroll(&self, event: &NSEvent) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let hide = {
+            let state = state.borrow();
+            (event.scrollingDeltaY() < 0.0 && state.config.scroll_down_hides)
+                || (event.scrollingDeltaY() > 0.0 && state.config.scroll_up_hides)
+        };
+        if hide {
+            dispatch(&state, Action::HideBar(self.display, true));
         }
     }
 }
 define_class!(
- #[unsafe(super=NSScrollView)] #[thread_kind=MainThreadOnly] #[ivars=BarIvars] #[name="TaskbarRustTaskScrollView"] struct TaskScrollView;
- unsafe impl NSObjectProtocol for TaskScrollView {}
- impl TaskScrollView {
-  #[unsafe(method(resetCursorRects))] fn reset_cursor_rects(&self){self.addCursorRect_cursor(self.visibleRect(),&NSCursor::arrowCursor());}
-  #[unsafe(method(cursorUpdate:))] fn cursor_update(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseEntered:))] fn entered(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseMoved:))] fn moved(&self,_e:&NSEvent){NSCursor::arrowCursor().set();}
-  #[unsafe(method(mouseDownCanMoveWindow))] fn mouse_down_can_move_window(&self)->bool{false}
-  #[unsafe(method(updateTrackingAreas))] fn update_tracking_areas(&self){update_arrow_tracking(self,&self.ivars().tracking);unsafe{let _:()=msg_send![super(self),updateTrackingAreas];}}
-  #[unsafe(method(scrollWheel:))] fn scroll(&self,e:&NSEvent){
-   if e.scrollingDeltaX()!=0.0 || e.modifierFlags().contains(NSEventModifierFlags::Shift){unsafe{let _:()=msg_send![super(self),scrollWheel:e];}}
-   else if let Some(s)=self.ivars().state.upgrade(){let hide={let s=s.borrow();(e.scrollingDeltaY()<0.0&&s.config.scroll_down_hides)||(e.scrollingDeltaY()>0.0&&s.config.scroll_up_hides)};if hide{dispatch(&s,Action::HideBar(self.ivars().display,true));}}
-   NSCursor::arrowCursor().set();
-  }
- }
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = BarIvars]
+    #[name = "TaskbarRustBarView"]
+    struct BarView;
+
+    unsafe impl NSObjectProtocol for BarView {}
+
+    impl BarView {
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            update_arrow_tracking(self, &self.ivars().tracking);
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_down(&self, event: &NSEvent) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let menu = context_menu(&state, Some(&Action::HideBar(self.ivars().display, false)));
+                NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll(&self, event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+            self.ivars().scroll(event);
+        }
+    }
+);
+impl BarView {
+    fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
+        let m = MainThreadMarker::new().unwrap();
+        let ivars = BarIvars {
+            state: Rc::downgrade(s),
+            display: d,
+            tracking: RefCell::new(None),
+        };
+        unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] }
+    }
+}
+define_class!(
+    #[unsafe(super = NSScrollView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = BarIvars]
+    #[name = "TaskbarRustTaskScrollView"]
+    struct TaskScrollView;
+
+    unsafe impl NSObjectProtocol for TaskScrollView {}
+
+    impl TaskScrollView {
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.visibleRect(), &NSCursor::arrowCursor());
+        }
+
+        #[unsafe(method(cursorUpdate:))]
+        fn cursor_update(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn entered(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn moved(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            update_arrow_tracking(self, &self.ivars().tracking);
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll(&self, event: &NSEvent) {
+            if event.scrollingDeltaX() != 0.0
+                || event.modifierFlags().contains(NSEventModifierFlags::Shift)
+            {
+                unsafe {
+                    let _: () = msg_send![super(self), scrollWheel: event];
+                }
+            } else {
+                self.ivars().scroll(event);
+            }
+            NSCursor::arrowCursor().set();
+        }
+    }
 );
 impl TaskScrollView {
     fn new(s: &Shared, d: u32, r: NSRect) -> Retained<Self> {
         let m = MainThreadMarker::new().unwrap();
-        unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(BarIvars{state:Rc::downgrade(s),display:d,tracking:RefCell::new(None)})),initWithFrame:r]
-        }
+        let ivars = BarIvars {
+            state: Rc::downgrade(s),
+            display: d,
+            tracking: RefCell::new(None),
+        };
+        unsafe { msg_send![super(Self::alloc(m).set_ivars(ivars)), initWithFrame: r] }
     }
 }
 fn update_arrow_tracking(view: &NSView, tracking: &RefCell<Option<Retained<NSTrackingArea>>>) {
@@ -555,9 +928,7 @@ fn reuse_button(
     if !native_text_matches(&b.title(), &[title]) {
         let title = NSString::from_str(title);
         b.setTitle(&title);
-        unsafe {
-            let _: () = msg_send![&*b,setAccessibilityLabel:&*title];
-        }
+        b.setAccessibilityLabel(Some(&title));
     }
     b
 }
@@ -611,11 +982,27 @@ struct SettingIvars {
     key: String,
 }
 define_class!(
- #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=SettingIvars] #[name = "TaskbarRustSettingTarget"] struct SettingTarget;
- unsafe impl NSObjectProtocol for SettingTarget {}
- impl SettingTarget {
-  #[unsafe(method(changed:))] fn changed(&self,sender:&NSControl){if let Some(state)=self.ivars().state.upgrade(){let mut s=state.borrow_mut();number_setting(&mut s.config,&self.ivars().key,sender.doubleValue());if let Err(e)=s.config.save(){s.error=e;}s.dirty=true;}}
- }
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SettingIvars]
+    #[name = "TaskbarRustSettingTarget"]
+    struct SettingTarget;
+
+    unsafe impl NSObjectProtocol for SettingTarget {}
+
+    impl SettingTarget {
+        #[unsafe(method(changed:))]
+        fn changed(&self, sender: &NSControl) {
+            if let Some(state) = self.ivars().state.upgrade() {
+                let mut state = state.borrow_mut();
+                number_setting(&mut state.config, &self.ivars().key, sender.doubleValue());
+                if let Err(error) = state.config.save() {
+                    state.error = error;
+                }
+                state.dirty = true;
+            }
+        }
+    }
 );
 impl SettingTarget {
     fn new(s: &Shared, key: &str) -> Retained<Self> {
@@ -632,9 +1019,19 @@ impl SettingTarget {
     }
 }
 define_class!(
- #[unsafe(super=NSPanel)] #[thread_kind=MainThreadOnly] #[name = "TaskbarRustPopupPanel"] struct PopupPanel;
- unsafe impl NSObjectProtocol for PopupPanel {}
- impl PopupPanel {#[unsafe(method(cancelOperation:))] fn cancel(&self,_sender:Option<&AnyObject>){self.close();}}
+    #[unsafe(super = NSPanel)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TaskbarRustPopupPanel"]
+    struct PopupPanel;
+
+    unsafe impl NSObjectProtocol for PopupPanel {}
+
+    impl PopupPanel {
+        #[unsafe(method(cancelOperation:))]
+        fn cancel(&self, _sender: Option<&AnyObject>) {
+            self.close();
+        }
+    }
 );
 fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
@@ -1086,11 +1483,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             if let Some(b) = item.button(MainThreadMarker::new().unwrap()) {
                 b.setImage(Some(&brand::status_icon()));
                 b.setToolTip(Some(&NSString::from_str("Rowla — Preferences")));
-                // SAFETY: NSStatusBarButton supports the NSAccessibility label selector.
-                unsafe {
-                    let _: () =
-                        msg_send![&*b, setAccessibilityLabel: &*NSString::from_str("Rowla")];
-                }
+                b.setAccessibilityLabel(Some(&NSString::from_str("Rowla")));
                 unsafe {
                     b.setTarget(Some(s.delegate()));
                     b.setAction(Some(sel!(statusAction:)));
@@ -1334,9 +1727,11 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                     title,
                     rect(at, 0.0, arrow_width, h),
                 );
-                unsafe {
-                    let _: () = msg_send![&*b,setAccessibilityLabel:&*NSString::from_str(if right{"Show later windows"}else{"Show earlier windows"})];
-                }
+                b.setAccessibilityLabel(Some(&NSString::from_str(if right {
+                    "Show later windows"
+                } else {
+                    "Show earlier windows"
+                })));
                 fixed_children.push(as_view(&b));
                 buttons.insert(b.ivars().action.clone(), b);
             }
@@ -2635,9 +3030,7 @@ fn refresh_permission_labels(state: &Shared) {
         };
         let title = NSString::from_str(&title);
         button.setTitle(&title);
-        unsafe {
-            let _: () = msg_send![button, setAccessibilityLabel: &*title];
-        }
+        button.setAccessibilityLabel(Some(&title));
     }
 }
 fn show_start(state: &Shared, display: u32) {

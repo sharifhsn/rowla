@@ -605,8 +605,11 @@ impl Service {
                 );
                 app.seen.clear();
             }
+            let Some(pending) = &mut app.pending else {
+                return;
+            };
             while !ipc_budget::expired() {
-                let Some(el) = app.pending.as_mut().unwrap().pop_front() else {
+                let Some(el) = pending.pop_front() else {
                     break;
                 };
                 let role = text_attr(el.0, ns_string!("AXSubrole"));
@@ -614,7 +617,7 @@ impl Service {
                     if ipc_budget::discard_destroyed_element() {
                         continue;
                     }
-                    app.pending.as_mut().unwrap().push_front(el);
+                    pending.push_front(el);
                     break;
                 }
                 if ![
@@ -663,7 +666,7 @@ impl Service {
                     if ipc_budget::discard_destroyed_element() {
                         continue;
                     }
-                    app.pending.as_mut().unwrap().push_front(el);
+                    pending.push_front(el);
                     break;
                 }
                 let Some(id) = id.filter(|id| *id != 0) else {

@@ -32,8 +32,14 @@ define_class!(
         fn draw(&self, _dirty: NSRect) {
             let bounds = self.bounds();
             let outline = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                rect(0.5, 0.5, (bounds.size.width - 1.0).max(0.0), (bounds.size.height - 1.0).max(0.0)),
-                6.0, 6.0,
+                rect(
+                    0.5,
+                    0.5,
+                    (bounds.size.width - 1.0).max(0.0),
+                    (bounds.size.height - 1.0).max(0.0),
+                ),
+                6.0,
+                6.0,
             );
             NSColor::windowBackgroundColor().set();
             outline.fill();
@@ -76,7 +82,9 @@ define_class!(
         }
 
         #[unsafe(method(mouseDownCanMoveWindow))]
-        fn mouse_down_can_move_window(&self) -> bool { false }
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
 
         #[unsafe(method(updateTrackingAreas))]
         fn update_tracking_areas(&self) {
@@ -87,17 +95,21 @@ define_class!(
             // InVisibleRect lets AppKit follow layout; exactly one area is retained.
             let area = unsafe {
                 NSTrackingArea::initWithRect_options_owner_userInfo(
-                    NSTrackingArea::alloc(), self.bounds(),
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
                     NSTrackingAreaOptions::MouseEnteredAndExited
                         | NSTrackingAreaOptions::MouseMoved
                         | NSTrackingAreaOptions::ActiveAlways
                         | NSTrackingAreaOptions::InVisibleRect,
-                    Some(self), None,
+                    Some(self),
+                    None,
                 )
             };
             self.addTrackingArea(&area);
             *self.ivars().tracking.borrow_mut() = Some(area);
-            unsafe { let _: () = msg_send![super(self), updateTrackingAreas]; }
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
         }
     }
 );
@@ -105,11 +117,11 @@ define_class!(
 impl PreviewFrame {
     pub(super) fn new(frame: NSRect) -> Retained<Self> {
         let mtm = MainThreadMarker::new().unwrap();
-        unsafe {
-            msg_send![super(Self::alloc(mtm).set_ivars(FrameIvars {
-                hovered: Cell::new(false), tracking: RefCell::new(None),
-            })), initWithFrame: frame]
-        }
+        let ivars = FrameIvars {
+            hovered: Cell::new(false),
+            tracking: RefCell::new(None),
+        };
+        unsafe { msg_send![super(Self::alloc(mtm).set_ivars(ivars)), initWithFrame: frame] }
     }
 
     pub(super) fn clear_highlight(&self) {

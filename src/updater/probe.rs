@@ -17,21 +17,36 @@ struct Ivars {
     result: Rc<RefCell<ResultData>>,
 }
 define_class!(
-    #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=Ivars]
-    #[name="TaskbarRustUpdaterProbe"] struct Delegate;
-    unsafe impl NSObjectProtocol for Delegate{}
-    impl Delegate{
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Ivars]
+    #[name = "TaskbarRustUpdaterProbe"]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    impl Delegate {
         #[unsafe(method(updater:didFindValidUpdate:))]
-        fn found(&self,_updater:&AnyObject,item:&AnyObject){
-            let version:Retained<NSString>=unsafe{msg_send![item,versionString]};
-            self.ivars().result.borrow_mut().version=Some(version.to_string());
+        fn found(&self, _updater: &AnyObject, item: &AnyObject) {
+            let version: Retained<NSString> = unsafe { msg_send![item, versionString] };
+            self.ivars().result.borrow_mut().version = Some(version.to_string());
         }
+
         #[unsafe(method(updater:didAbortWithError:))]
-        fn failed(&self,_updater:&AnyObject,error:&AnyObject){self.ivars().result.borrow_mut().error=Some(native_error((error as *const AnyObject).cast_mut(),"Sparkle error"));}
+        fn failed(&self, _updater: &AnyObject, error: &AnyObject) {
+            self.ivars().result.borrow_mut().error = Some(native_error(
+                std::ptr::from_ref(error).cast_mut(),
+                "Sparkle error",
+            ));
+        }
+
         #[unsafe(method(updater:didFinishUpdateCycleForUpdateCheck:error:))]
-        fn finished(&self,_updater:&AnyObject,_check:isize,error:Option<&AnyObject>){
-            let mut result=self.ivars().result.borrow_mut();result.finished=true;
-            if let Some(error)=error{result.error=Some(native_error((error as *const AnyObject).cast_mut(),"Sparkle error"));}
+        fn finished(&self, _updater: &AnyObject, _check: isize, error: Option<&AnyObject>) {
+            let mut result = self.ivars().result.borrow_mut();
+            result.finished = true;
+            if let Some(error) = error {
+                result.error = Some(native_error(std::ptr::from_ref(error).cast_mut(), "Sparkle error"));
+            }
         }
     }
 );

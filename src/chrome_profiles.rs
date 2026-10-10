@@ -173,13 +173,12 @@ struct State {
 }
 
 fn component(name: &str) -> bool {
+    let mut components = Path::new(name).components();
     !name.is_empty()
         && name.len() <= 256
         && !name.contains(['/', '\\', '\0'])
-        && matches!(
-            Path::new(name).components().collect::<Vec<_>>().as_slice(),
-            [Component::Normal(_)]
-        )
+        && matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
 }
 pub(crate) fn picture_path(root: &Path, folder: &str, filename: &str) -> Option<PathBuf> {
     if !component(folder) || !component(filename) {

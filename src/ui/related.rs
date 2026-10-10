@@ -124,10 +124,7 @@ pub(super) fn render_bubbles(
             ),
         );
         set_tooltip(&b, &[&tooltip]);
-        // SAFETY: all buttons implement AppKit's accessibility label selector.
-        unsafe {
-            let _: () = msg_send![&*b,setAccessibilityLabel:&*NSString::from_str(&tooltip)];
-        }
+        b.setAccessibilityLabel(Some(&NSString::from_str(&tooltip)));
         b.set_window_focus(active, 9.0 * scale);
         if new {
             let tracking = unsafe {
