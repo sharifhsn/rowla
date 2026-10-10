@@ -182,6 +182,13 @@ struct State {
     last_catalog: Instant,
 }
 impl State {
+    fn save_config(&mut self) {
+        if self.gui_smoke.is_none()
+            && let Err(error) = self.config.save()
+        {
+            self.error = error;
+        }
+    }
     fn delegate(&self) -> &Delegate {
         let delegate = self
             .delegate
@@ -333,10 +340,8 @@ define_class!(
             state.hover_close.take();
             crate::runtime::stop();
             let _ = state.tx.try_send(Command::Stop);
+            state.save_config();
             if state.gui_smoke.is_none() {
-                if let Err(error) = state.config.save() {
-                    state.error = error;
-                }
                 let _ = crate::dock::shutdown_restore();
             }
             crate::capture::shutdown();
@@ -996,9 +1001,7 @@ define_class!(
             if let Some(state) = self.ivars().state.upgrade() {
                 let mut state = state.borrow_mut();
                 number_setting(&mut state.config, &self.ivars().key, sender.doubleValue());
-                if let Err(error) = state.config.save() {
-                    state.error = error;
-                }
+                state.save_config();
                 state.dirty = true;
             }
         }
@@ -2100,9 +2103,7 @@ fn dispatch(state: &Shared, a: Action) {
             state.borrow().command(Command::Launch(b.clone(), a));
             let mut s = state.borrow_mut();
             s.config.remember(&b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             if let Some(m) = s.start.take() {
                 m.panel.close();
             }
@@ -2141,17 +2142,13 @@ fn dispatch(state: &Shared, a: Action) {
                     action: "launchOrActivateApp".into(),
                 });
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Unpin(b) => {
             let mut s = state.borrow_mut();
             s.config.pins.retain(|p| p.bundle != b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Blacklist(b) => {
@@ -2159,9 +2156,7 @@ fn dispatch(state: &Shared, a: Action) {
             if !s.config.blacklist.contains(&b) {
                 s.config.blacklist.push(b);
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let picker = s
                 .start
@@ -2178,9 +2173,7 @@ fn dispatch(state: &Shared, a: Action) {
         Action::RemoveBlacklist(b) => {
             let mut s = state.borrow_mut();
             s.config.blacklist.retain(|p| p != &b);
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             drop(s);
             show_preferences(state, 4);
@@ -2190,9 +2183,7 @@ fn dispatch(state: &Shared, a: Action) {
             if let Some(p) = s.config.pins.iter_mut().find(|p| p.bundle == b) {
                 p.action = a;
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
         }
         Action::HideBar(d, now) => {
             let mut s = state.borrow_mut();
@@ -2202,9 +2193,7 @@ fn dispatch(state: &Shared, a: Action) {
                 if !s.config.hidden_displays.contains(&d) {
                     s.config.hidden_displays.push(d);
                 }
-                if let Err(e) = s.config.save() {
-                    s.error = e;
-                }
+                s.save_config();
             }
             s.dirty = true;
         }
@@ -2212,11 +2201,7 @@ fn dispatch(state: &Shared, a: Action) {
             let mut s = state.borrow_mut();
             s.hidden_now.clear();
             s.config.hidden_displays.clear();
-            if s.gui_smoke.is_none()
-                && let Err(e) = s.config.save()
-            {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::HideBars => {
@@ -2224,11 +2209,7 @@ fn dispatch(state: &Shared, a: Action) {
             s.config.hidden_displays = screens().iter().map(|(id, _)| *id).collect();
             // Keep a restoration control even if the user previously hid the icon.
             s.config.show_menubar = true;
-            if s.gui_smoke.is_none()
-                && let Err(error) = s.config.save()
-            {
-                s.error = error;
-            }
+            s.save_config();
             s.dirty = true;
         }
         Action::Toggle(k) => {
@@ -2244,9 +2225,7 @@ fn dispatch(state: &Shared, a: Action) {
             {
                 s.error = e;
             }
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let page = s.preferences.as_ref().map(|p| p.page);
             drop(s);
@@ -2284,11 +2263,7 @@ fn dispatch(state: &Shared, a: Action) {
                 }
                 .into();
             }
-            if s.gui_smoke.is_none()
-                && let Err(e) = s.config.save()
-            {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             let page = s.preferences.as_ref().map(|p| p.page);
             drop(s);
@@ -2318,9 +2293,7 @@ fn dispatch(state: &Shared, a: Action) {
             s.config.update_policy = policy;
             s.config.local_crash_reports = crash;
             let _ = s.tx.try_send(Command::Dock(s.config.fully_hide_dock));
-            if let Err(e) = s.config.save() {
-                s.error = e;
-            }
+            s.save_config();
             s.dirty = true;
             drop(s);
             show_preferences(state, 0);
@@ -2515,9 +2488,7 @@ fn reorder(state: &Shared, a: &Action, x: f64, window: isize) -> bool {
             ) {
                 let p = s.config.pins.remove(a);
                 s.config.pins.insert(b, p);
-                if let Err(e) = s.config.save() {
-                    s.error = e;
-                }
+                s.save_config();
                 s.dirty = true;
                 return true;
             }

@@ -7,7 +7,6 @@ use std::{
 };
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
-static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,14 +173,15 @@ impl Config {
         Ok(c)
     }
     pub fn save(&self) -> Result<(), String> {
-        fs::create_dir_all(Self::directory()).map_err(|e| e.to_string())?;
+        let directory = Self::directory();
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(Self::directory(), fs::Permissions::from_mode(0o700))
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
                 .map_err(|e| e.to_string())?;
         }
-        self.save_to(&Self::path())
+        self.save_to(&directory.join("config.json"))
     }
     /// Write a complete, durable temporary file before atomically publishing it.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
@@ -195,34 +195,20 @@ impl Config {
         // invalid JSON that the next launch cannot read.
         let _: Self = serde_json::from_slice(&bytes)
             .map_err(|e| format!("Invalid preference extensions: {e}"))?;
-        let temp = path.with_extension(format!(
-            "tmp.{}.{}.{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_nanos(),
-            WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let mut created = false;
-        let result = (|| {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temp).map_err(|e| e.to_string())?;
-            created = true;
-            file.write_all(&bytes).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
-            fs::rename(&temp, path).map_err(|e| e.to_string())
+        let result: std::io::Result<()> = (|| {
+            // The same directory keeps replacement atomic. NamedTempFile creates
+            // a private file and removes it if any operation fails.
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(&bytes)?;
+            file.as_file().sync_all()?;
+            file.persist(path)?;
+            Ok(())
         })();
-        if result.is_err() && created {
-            let _ = fs::remove_file(temp);
-        }
-        result
+        result.map_err(|e| e.to_string())
     }
     pub fn normalize(&mut self) {
         let defaults = Self::default();
@@ -320,6 +306,17 @@ mod tests {
             );
         }
         fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn failed_replacement_preserves_destination_and_removes_temporary_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        fs::create_dir(&path).unwrap();
+        let original = path.join("keep");
+        fs::write(&original, b"original").unwrap();
+        assert!(Config::default().save_to(&path).is_err());
+        assert_eq!(fs::read(original).unwrap(), b"original");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
     #[test]
     fn oversized_preferences_are_rejected_and_preserved() {
