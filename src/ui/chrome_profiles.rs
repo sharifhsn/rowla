@@ -7,8 +7,7 @@ use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo,
 };
-use std::collections::BTreeMap;
-
+use std::sync::Arc;
 struct Cached {
     source: Profile,
     image: Retained<NSImage>,
@@ -17,7 +16,7 @@ type FileWorker = (mpsc::SyncSender<Browsers>, mpsc::Receiver<Vec<Catalog>>);
 #[derive(Default)]
 pub(super) struct Service {
     catalogs: Vec<Catalog>,
-    images: BTreeMap<(Browser, String), Cached>,
+    images: [Vec<Cached>; 4],
     worker: Option<FileWorker>,
     requested: Browsers,
     next: Option<Instant>,
@@ -71,14 +70,20 @@ impl Service {
         changed
     }
     pub(super) fn install(&mut self, catalogs: Vec<Catalog>) {
-        self.images.retain(|(browser, folder), cached| {
-            catalogs.iter().any(|c| {
-                c.browser == *browser
-                    && c.profiles
-                        .iter()
-                        .any(|p| p.folder == *folder && p == &cached.source)
-            })
-        });
+        for (browser, images) in self.images.iter_mut().enumerate() {
+            let catalog = catalogs.iter().find(|c| c.browser as usize == browser);
+            images.retain_mut(|cached| {
+                let Some(profile) =
+                    catalog.and_then(|c| c.profiles.iter().find(|p| *p == &cached.source))
+                else {
+                    return false;
+                };
+                // Keep the image but share the current catalog's name.
+                cached.source.name = profile.name.clone();
+                true
+            });
+            images.shrink_to_fit();
+        }
         self.catalogs = catalogs;
     }
     pub(super) fn diagnostics(&self) -> serde_json::Value {
@@ -87,7 +92,7 @@ impl Service {
             "profiles": profiles.clone().count(),
             "photos": profiles.clone().filter(|p| p.pixels.is_some()).count(),
             "pixel_bytes": profiles.filter_map(|p| p.pixels.as_ref()).map(|p| p.len()).sum::<usize>(),
-            "cached_badges": self.images.len(),
+            "cached_badges": self.images.iter().map(Vec::len).sum::<usize>(),
             "pending": self.pending,
         })
     }
@@ -95,19 +100,30 @@ impl Service {
         &mut self,
         bundle: &str,
         title: &str,
-    ) -> Option<(Retained<NSImage>, String)> {
+    ) -> Option<(Retained<NSImage>, Arc<str>)> {
         let browser = Browser::for_bundle(bundle)?;
         let profile = self
             .catalogs
             .iter()
             .find(|c| c.browser == browser)?
             .profile_for_title(title)?;
-        let key = (browser, profile.folder.clone());
         // install removes badges whose source profile changed.
-        let cached = self.images.entry(key).or_insert_with(|| Cached {
-            source: profile.clone(),
-            image: make_badge(profile),
-        });
+        // Each browser has at most 32 profiles. Borrow their existing folders
+        // instead of allocating a second cache key on every redraw.
+        let images = &mut self.images[browser as usize];
+        let index = images
+            .iter()
+            .position(|c| c.source.folder == profile.folder)
+            .unwrap_or_else(|| {
+                let index = images.len();
+                images.reserve_exact(1);
+                images.push(Cached {
+                    source: profile.clone(),
+                    image: make_badge(profile),
+                });
+                index
+            });
+        let cached = &images[index];
         Some((cached.image.clone(), profile.name.clone()))
     }
 }
@@ -155,7 +171,7 @@ fn make_badge(profile: &Profile) -> Retained<NSImage> {
     let local = profile
         .name
         .rsplit_once(" (")
-        .map_or(profile.name.as_str(), |(_, local)| local);
+        .map_or(profile.name.as_ref(), |(_, local)| local);
     let initial = NSString::from_str(
         &local
             .chars()
@@ -255,16 +271,17 @@ pub(super) fn apply(state: &Shared, button: &ActionButton, window: &Window) {
         *current = image.cloned();
         NSView::setNeedsDisplay(button, true);
     }
-    let profile = badge.map_or(String::new(), |(_, name)| {
-        format!("\nChrome profile: {name}")
-    });
+    let (prefix, profile) = badge
+        .as_ref()
+        .map_or(("", ""), |(_, name)| ("\nChrome profile: ", name.as_ref()));
     set_tooltip(
         button,
         &[
             &window.app,
             " — ",
             &window.title,
-            &profile,
+            prefix,
+            profile,
             "\n⌘W closes this window. ⌘Q quits its application.",
         ],
     );

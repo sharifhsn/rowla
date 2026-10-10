@@ -411,6 +411,71 @@ fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
                 .into()
         }),
     };
+    let cache_lifecycle = {
+        let cases = [
+            (
+                Browser::Stable,
+                "com.google.Chrome",
+                "QA - Google Chrome - Alex",
+            ),
+            (
+                Browser::Beta,
+                "com.google.Chrome.beta",
+                "QA - Google Chrome Beta - Alex",
+            ),
+            (
+                Browser::Dev,
+                "com.google.Chrome.dev",
+                "QA - Google Chrome Dev - Alex",
+            ),
+            (
+                Browser::Canary,
+                "com.google.Chrome.canary",
+                "QA - Google Chrome Canary - Alex",
+            ),
+        ];
+        let mut catalogs: Vec<_> = cases
+            .iter()
+            .map(|(browser, _, _)| Catalog {
+                browser: *browser,
+                profiles: vec![profile("Default", "Alex", 0xff3478bc, false)],
+            })
+            .collect();
+        let mut cache = chrome_profiles::Service::default();
+        cache.install(catalogs.clone());
+        let originals: Vec<_> = cases
+            .iter()
+            .map(|(_, bundle, title)| cache.badge(bundle, title).unwrap())
+            .collect();
+        let separate = originals.iter().enumerate().all(|(i, (image, name))| {
+            name.as_ref() == "Alex"
+                && originals[..i]
+                    .iter()
+                    .all(|(other, _)| !std::ptr::eq(&**image, &**other))
+        });
+        catalogs.reverse();
+        cache.install(catalogs.clone());
+        let shared = cases
+            .iter()
+            .zip(&originals)
+            .all(|((_, bundle, title), (image, name))| {
+                let (next_image, next_name) = cache.badge(bundle, title).unwrap();
+                std::ptr::eq(&**image, &*next_image) && std::sync::Arc::ptr_eq(name, &next_name)
+            });
+        catalogs[0].profiles[0].color ^= 1;
+        cache.install(catalogs);
+        let updated = cache.badge(cases[3].1, cases[3].2).unwrap();
+        let replaced = !std::ptr::eq(&*updated.0, &*originals[3].0);
+        let name = std::sync::Arc::downgrade(&originals[0].1);
+        cache.install(vec![]);
+        drop(originals);
+        drop(updated);
+        separate
+            && shared
+            && replaced
+            && cache.diagnostics()["cached_badges"] == 0
+            && name.upgrade().is_none()
+    };
     {
         let mut s = state.borrow_mut();
         s.config.chrome_profile_badges = true;
@@ -529,7 +594,8 @@ fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
         (s.config, s.snapshot, s.order, s.profile_badges) = saved;
     }
     render(state);
-    serde_json::json!({"passed":mapped&&reused&&bounds&&hit&&close_target&&screenshot&&narrow&&disabled,
+    serde_json::json!({"passed":cache_lifecycle&&mapped&&reused&&bounds&&hit&&close_target&&screenshot&&narrow&&disabled,
+        "cache_refresh_and_release":cache_lifecycle,
         "profile_mapping":mapped,"shared_images_and_controls":reused,"badge_bounds":bounds,
         "badge_hit_target":hit,"hover_close_target":close_target,"synthetic_screenshot":screenshot,
         "icon_only_scaled_bounds":narrow,"scaled_panel_height":scaled_height,"disabled_clears_images":disabled})

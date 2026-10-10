@@ -61,7 +61,8 @@ impl Browser {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Profile {
     pub folder: String,
-    pub name: String,
+    /// Catalogs and badges share this owned display name.
+    pub name: Arc<str>,
     pub color: u32,
     pub picture_file: Option<String>,
     /// Shared, owned BGRA pixels. Each image is exactly 32 × 32 pixels.
@@ -78,7 +79,7 @@ impl Catalog {
             .rsplit_once(self.browser.separator())
             .map(|(_, name)| name);
         if let Some(name) = name {
-            let mut matches = self.profiles.iter().filter(|p| p.name == name);
+            let mut matches = self.profiles.iter().filter(|p| p.name.as_ref() == name);
             let first = matches.next();
             return first.filter(|_| matches.next().is_none());
         }
@@ -209,7 +210,7 @@ pub(crate) fn parse(browser: Browser, bytes: &[u8]) -> Option<Catalog> {
         .iter()
         .map(|(folder, p)| Profile {
             folder: folder.clone(),
-            name: p.display(&state.profile.info_cache),
+            name: p.display(&state.profile.info_cache).into(),
             color: p
                 .profile_highlight_color
                 .map_or(0xff4285f4, |color| color as u32 | 0xff000000),
@@ -245,7 +246,7 @@ mod tests {
         assert_eq!(
             c.profiles
                 .iter()
-                .map(|p| p.name.as_str())
+                .map(|p| p.name.as_ref())
                 .collect::<Vec<_>>(),
             ["Alex", "Alex (Work)", "ALEX (School)"]
         );
