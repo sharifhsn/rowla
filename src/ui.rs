@@ -131,7 +131,8 @@ struct State {
     hover_close: Option<hover_close::Service>,
     performance: qa::Performance,
     config: Config,
-    snapshot: Snapshot,
+    // Redraws retain this owned snapshot. Worker updates replace it.
+    snapshot: Rc<Snapshot>,
     pending_focus: Option<active_feedback::PendingFocus>,
     pending_tab: Option<(u32, u64, Instant)>,
     pending_system_sort: bool,
@@ -771,7 +772,7 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
             || s.capture_busy
             || s.preview_cache.len() != 0);
     if !windows_changed && !permissions_changed && !preview_cleanup {
-        s.snapshot = snapshot;
+        s.snapshot = Rc::new(snapshot);
         return false;
     }
     let changed = snapshot.windows.iter().find(|w| w.focused).map(|w| w.id)
@@ -818,7 +819,7 @@ fn apply_snapshot(s: &mut State, snapshot: Snapshot) -> bool {
         s.config.reset_space_order,
         &alive,
     );
-    s.snapshot = snapshot;
+    s.snapshot = Rc::new(snapshot);
     prune_preview_sources(s, &alive);
     permissions_changed
 }
@@ -1103,11 +1104,11 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         }
         s.dirty = false;
     }
-    let (c, windows, positions, focused_id) = {
+    let (c, snapshot, positions, focused_id) = {
         let s = state.borrow();
         (
             BarSettings::from(&s.config),
-            s.snapshot.windows.clone(),
+            s.snapshot.clone(),
             s.order
                 .iter()
                 .enumerate()
@@ -1116,6 +1117,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             s.focused_id(),
         )
     };
+    let windows = &snapshot.windows;
     let mut open_apps: HashSet<&str> = windows.iter().map(|w| w.bundle.as_str()).collect();
     let pins: Vec<_> = c
         .pins
@@ -1183,7 +1185,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             }
             tasks.sort_by_cached_key(|w| apps[w.bundle.as_str()]);
         }
-        let groups = if c.compact_related_windows {
+        let mut groups = if c.compact_related_windows {
             crate::related_windows::groups(&tasks)
         } else {
             tasks
@@ -1194,10 +1196,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 })
                 .collect()
         };
-        let groups: Vec<_> = groups
-            .into_iter()
-            .filter(|g| c.show_tabs || !g.main.tabbed_hidden)
-            .collect();
+        groups.retain(|g| c.show_tabs || !g.main.tabbed_hidden);
         let hidden = {
             let s = state.borrow();
             s.hidden_now.contains(&d)
@@ -3489,7 +3488,7 @@ fn run_mode(
             last: Instant::now(),
         }),
         config,
-        snapshot: Snapshot::default(),
+        snapshot: Rc::default(),
         pending_focus: None,
         pending_tab: None,
         pending_system_sort: false,

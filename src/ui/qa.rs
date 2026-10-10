@@ -62,8 +62,8 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         s.config.main_only = false;
         s.config.center = false;
         s.config.resize_overlap = false;
-        s.snapshot.trusted = true;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot).trusted = true;
+        Rc::make_mut(&mut s.snapshot)
             .badges
             .insert("com.apple.TextEdit".into(), "1".into());
     }
@@ -78,7 +78,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         eprintln!("Native UI check: {windows} fixture buttons");
         {
             let mut s = state.borrow_mut();
-            s.snapshot.windows = (1..=windows)
+            Rc::make_mut(&mut s.snapshot).windows = (1..=windows)
                 .map(|id| Window {
                     id: id as u32,
                     pid: 1000 + id as i32,
@@ -104,7 +104,7 @@ pub(super) fn run(state: &Shared, count: usize) -> bool {
         state.borrow_mut().performance.render = Timing::default();
         for cycle in 0..count {
             let mut s = state.borrow_mut();
-            for (i, w) in s.snapshot.windows.iter_mut().enumerate() {
+            for (i, w) in Rc::make_mut(&mut s.snapshot).windows.iter_mut().enumerate() {
                 w.focused = i == cycle % windows;
                 w.x = (cycle % 2) as f64;
             }
@@ -342,7 +342,7 @@ fn check_native_tab_order(state: &Shared) -> serde_json::Value {
             s.config.hidden_displays.clear();
             s.hidden_now.clear();
             s.config.reset_space_order = reset;
-            s.snapshot = snapshot(10);
+            s.snapshot = Rc::new(snapshot(10));
             s.order = vec![3, 10, 1];
             s.known_spaces = HashMap::from([(3, true), (10, true), (1, true)]);
             s.pending_focus = None;
@@ -431,7 +431,7 @@ fn check_chrome_profiles(state: &Shared) -> serde_json::Value {
                 profile("Profile 2", "School", 0xff56843d, false),
             ],
         }]);
-        s.snapshot.windows = (1..=6)
+        Rc::make_mut(&mut s.snapshot).windows = (1..=6)
             .map(|id| Window {
                 id,
                 pid: 1,
@@ -559,7 +559,7 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
         s.config.all_displays = true;
         s.config.scale = 100.0;
         s.pending_focus = None;
-        s.snapshot.windows = (1..=9)
+        Rc::make_mut(&mut s.snapshot).windows = (1..=9)
             .map(|id| Window {
                 id,
                 pid: 1,
@@ -639,7 +639,7 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
     let bubble_frame = bubble.frame();
     let mut scan_stability = true;
     for cycle in 0..21 {
-        let mut next = state.borrow().snapshot.clone();
+        let mut next = state.borrow().snapshot.as_ref().clone();
         for window in &mut next.windows {
             window.stale = cycle % 2 == 1;
         }
@@ -680,8 +680,10 @@ fn check_related_windows(state: &Shared) -> serde_json::Value {
         s.config.scale = 100.0;
         s.config.max_width = 200.0;
         s.config.show_titles = true;
-        s.snapshot.windows.retain(|w| w.id == 1 || w.id == 2);
-        let main = &mut s.snapshot.windows[0];
+        Rc::make_mut(&mut s.snapshot)
+            .windows
+            .retain(|w| w.id == 1 || w.id == 2);
+        let main = &mut Rc::make_mut(&mut s.snapshot).windows[0];
         main.title = "Terminal".into();
         main.tab_count = 2;
         main.native_tabs = true;
@@ -1004,7 +1006,7 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
                 .collect(),
             ..Snapshot::default()
         };
-        s.snapshot = Snapshot::default();
+        s.snapshot = Rc::default();
         apply_snapshot(&mut s, snapshot.clone());
         let order = s.order.clone();
         let mut timing = Timing::default();
@@ -1038,19 +1040,26 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         cases.push(serde_json::json!({"windows":windows,"thumbnails":thumbnails,"passed":correct,"unchanged_snapshot":timing.json(),"changed_snapshot":changed_timing.json()}));
     }
     s.config.thumbnails = true;
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.truncate(3);
     apply_snapshot(&mut s, next);
     s.order = vec![3, 1, 2];
     s.hidden_now.insert(1);
     s.pending_focus = Some(active_feedback::PendingFocus::new(2, Instant::now()));
-    let mut next = s.snapshot.clone();
+    let rendered = s.snapshot.clone();
+    let previous = Rc::downgrade(&rendered);
+    let mut next = s.snapshot.as_ref().clone();
     next.windows[0].title = "Changed title".into();
     next.windows[0].focused = false;
     next.windows[1].focused = true;
     next.windows[2].on_space = false;
     s.dirty = false;
     apply_snapshot(&mut s, next);
+    let shared_snapshot = !Rc::ptr_eq(&rendered, &s.snapshot)
+        && rendered.windows[0].title == "Snapshot QA 1"
+        && rendered.windows[0].focused;
+    drop(rendered);
+    let previous_released = previous.upgrade().is_none();
     let changed_windows = s.dirty
         && s.snapshot.windows[0].title == "Changed title"
         && s.order == [1, 2, 3]
@@ -1058,7 +1067,7 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && s.hidden_now.is_empty()
         && s.pending_focus.is_none()
         && s.activity.len() == 2;
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.remove(0);
     next.windows.push(Window {
         id: 4,
@@ -1069,19 +1078,19 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && !s.known_spaces.contains_key(&1)
         && s.known_spaces.contains_key(&4)
         && s.activity.len() == 1;
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.badges.insert("com.apple.TextEdit".into(), "2".into());
     s.dirty = false;
     apply_snapshot(&mut s, next);
     let badge_change = s.dirty && s.snapshot.badges["com.apple.TextEdit"] == "2";
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.control_error = Some("Snapshot QA control failure".into());
     s.pending_focus = Some(active_feedback::PendingFocus::new(3, Instant::now()));
     s.dirty = false;
     apply_snapshot(&mut s, next);
     let control_failure =
         s.pending_focus.is_none() && s.dirty && s.error == "Snapshot QA control failure";
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.control_error = None;
     s.pending_focus = Some(active_feedback::PendingFocus::new(
         3,
@@ -1117,30 +1126,32 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
             && s.preview.as_ref().unwrap().image.image().is_none()
     };
     seed(&mut s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.screen_allowed = false;
     let permissions_changed = apply_snapshot(&mut s, next);
     let permission_cleanup = permissions_changed && released(&s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.screen_allowed = true;
     apply_snapshot(&mut s, next);
     seed(&mut s);
     s.config.thumbnails = false;
-    let next = s.snapshot.clone();
+    let next = s.snapshot.as_ref().clone();
     apply_snapshot(&mut s, next);
     let disabled_cleanup = released(&s);
     s.preview_cache
         .insert(2, image.clone(), bytes, Instant::now());
-    let next = s.snapshot.clone();
+    let next = s.snapshot.as_ref().clone();
     apply_snapshot(&mut s, next);
     let cache_cleanup = released(&s);
     s.config.thumbnails = true;
     seed(&mut s);
-    let mut next = s.snapshot.clone();
+    let mut next = s.snapshot.as_ref().clone();
     next.windows.retain(|w| w.id != 2);
     apply_snapshot(&mut s, next);
     let closed_cleanup = released(&s) && s.order == [3, 4] && s.activity.len() == 0;
     let passed = cases.iter().all(|case| case["passed"] == true)
+        && shared_snapshot
+        && previous_released
         && changed_windows
         && membership_changes
         && badge_change
@@ -1150,7 +1161,7 @@ fn check_snapshot_updates(state: &Shared, count: usize) -> serde_json::Value {
         && disabled_cleanup
         && cache_cleanup
         && closed_cleanup;
-    serde_json::json!({"passed":passed,"cases":cases,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"cache_cleanup":cache_cleanup,"closed_cleanup":closed_cleanup})
+    serde_json::json!({"passed":passed,"cases":cases,"shared_snapshot":shared_snapshot,"previous_released":previous_released,"changed_windows":changed_windows,"membership_changes":membership_changes,"badge_change":badge_change,"control_failure":control_failure,"expired_feedback":expired_feedback,"permission_cleanup":permission_cleanup,"disabled_cleanup":disabled_cleanup,"cache_cleanup":cache_cleanup,"closed_cleanup":closed_cleanup})
 }
 
 fn check_presentation_updates(state: &Shared) -> serde_json::Value {
@@ -1194,11 +1205,13 @@ fn check_presentation_updates(state: &Shared) -> serde_json::Value {
             s.config.theme = theme.into();
             s.config.font_size = 13.0 + i as f64 * 0.25;
             if i % 2 == 0 {
-                s.snapshot.badges.insert(bundle.into(), "1".into());
+                Rc::make_mut(&mut s.snapshot)
+                    .badges
+                    .insert(bundle.into(), "1".into());
             } else {
-                s.snapshot.badges.clear();
+                Rc::make_mut(&mut s.snapshot).badges.clear();
             }
-            s.snapshot.windows = vec![Window {
+            Rc::make_mut(&mut s.snapshot).windows = vec![Window {
                 id: 1,
                 bundle: bundle.into(),
                 app: "QA — App".into(),
@@ -1287,7 +1300,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
         }];
         s.config.app_order = vec!["com.apple.Safari".into(), "com.apple.TextEdit".into()];
         s.config.app_order_initialized = true;
-        s.snapshot.windows = (1..=5)
+        Rc::make_mut(&mut s.snapshot).windows = (1..=5)
             .map(|id| Window {
                 id,
                 pid: if id < 4 { 1 } else { 2 },
@@ -1309,7 +1322,7 @@ fn check_sort(state: &Shared) -> serde_json::Value {
             .collect();
         s.activity = crate::window_order::Activity::default();
         for id in [2, 4, 3] {
-            for w in &mut s.snapshot.windows {
+            for w in &mut Rc::make_mut(&mut s.snapshot).windows {
                 w.focused = w.id == id;
             }
             let State {
@@ -1470,7 +1483,7 @@ fn check_pins(state: &Shared) -> serde_json::Value {
         s.config.all_displays = false;
         s.config.show_hidden = false;
         s.config.blacklist = vec![bundles[1].into()];
-        s.snapshot.windows.clear();
+        Rc::make_mut(&mut s.snapshot).windows.clear();
         s.pending_focus = None;
     }
     let mut cases = Vec::new();
@@ -1525,7 +1538,7 @@ fn check_pins(state: &Shared) -> serde_json::Value {
         ),
         ("all_windows_closed", vec![], vec![0, 1, 2]),
     ] {
-        state.borrow_mut().snapshot.windows = windows;
+        Rc::make_mut(&mut state.borrow_mut().snapshot).windows = windows;
         render(state);
         let s = state.borrow();
         let bar = &s.bars[0];
@@ -1579,7 +1592,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
             s.pending_focus,
             s.config.click_hides_app,
         );
-        for w in &mut s.snapshot.windows {
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.focused = w.id == 1;
             w.hidden = false;
             w.minimized = false;
@@ -1597,7 +1610,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.pending_focus = None;
-        for w in &mut s.snapshot.windows {
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.focused = w.id == 64;
             w.minimized = w.id == 64;
         }
@@ -1607,7 +1620,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     {
         let mut s = state.borrow_mut();
         s.pending_focus = None;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -1616,9 +1629,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     }
     dispatch(state, Action::Window(64));
     let confirmed_focus_toggles = state.borrow().pending_focus.is_none();
-    state
-        .borrow_mut()
-        .snapshot
+    Rc::make_mut(&mut state.borrow_mut().snapshot)
         .windows
         .iter_mut()
         .find(|w| w.id == 64)
@@ -1635,7 +1646,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
     };
     {
         let mut s = state.borrow_mut();
-        s.snapshot.windows = windows;
+        Rc::make_mut(&mut s.snapshot).windows = windows;
         s.pending_focus = pending;
         s.config.click_hides_app = hides;
     }
@@ -1646,7 +1657,7 @@ fn check_focus_clicks(state: &Shared) -> serde_json::Value {
 fn check_cursor_and_clicks(state: &Shared) -> serde_json::Value {
     let (panel, root, scroll, tasks, buttons) = {
         let mut s = state.borrow_mut();
-        for window in &mut s.snapshot.windows {
+        for window in &mut Rc::make_mut(&mut s.snapshot).windows {
             window.focused = false;
         }
         s.pending_focus = None;
@@ -1819,8 +1830,8 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         let mut s = state.borrow_mut();
         s.config.thumbnails = true;
         s.config.hover_ms = 0;
-        s.snapshot.screen_allowed = true;
-        for w in &mut s.snapshot.windows {
+        Rc::make_mut(&mut s.snapshot).screen_allowed = true;
+        for w in &mut Rc::make_mut(&mut s.snapshot).windows {
             w.minimized = w.id == 63 || w.id == 64;
         }
         s.preview_cache
@@ -1866,7 +1877,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
             s.config.thumbnail_font = font;
             s.config.thumbnail_scale = scale;
             s.config.thumbnail_titles = visible;
-            s.snapshot
+            Rc::make_mut(&mut s.snapshot)
                 .windows
                 .iter_mut()
                 .find(|w| w.id == 64)
@@ -1890,7 +1901,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         s.config.thumbnail_font = saved.0;
         s.config.thumbnail_scale = saved.1;
         s.config.thumbnail_titles = saved.2;
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -1992,7 +2003,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
     hide_preview(state);
     let (retained_after_restore, closed_released) = {
         let mut s = state.borrow_mut();
-        s.snapshot
+        Rc::make_mut(&mut s.snapshot)
             .windows
             .iter_mut()
             .find(|w| w.id == 64)
@@ -2001,7 +2012,7 @@ fn check_minimized_preview(state: &Shared) -> serde_json::Value {
         poll_images(&mut s);
         let retained =
             s.preview_cache.get(64).is_some() && s.preview_cache.needs_refresh(64, Instant::now());
-        s.snapshot.windows.retain(|w| w.id != 64);
+        Rc::make_mut(&mut s.snapshot).windows.retain(|w| w.id != 64);
         let alive = s.snapshot.windows.iter().map(|w| w.id).collect();
         prune_preview_sources(&mut s, &alive);
         (

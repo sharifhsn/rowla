@@ -6,21 +6,25 @@ enum Entry<'a> {
     Tab(usize, &'a crate::models::WindowTab),
     Remaining(usize),
 }
-fn entries<'a>(main: &'a Window, children: &[&'a Window]) -> Vec<Entry<'a>> {
-    let mut result = Vec::new();
-    if main.tab_count > 1 {
-        result.extend(main.tabs.iter().enumerate().map(|(i, t)| Entry::Tab(i, t)));
-        if main.tab_count > main.tabs.len() {
-            result.push(Entry::Remaining(main.tab_count - main.tabs.len()));
-        }
-    }
-    result.extend(
-        children
-            .iter()
-            .filter(|w| !w.tabbed_hidden || !main.tabs.iter().any(|t| t.title == w.title))
-            .map(|w| Entry::Window(w)),
-    );
-    result
+fn entries<'a>(
+    main: &'a Window,
+    children: &'a [&'a Window],
+) -> impl Iterator<Item = Entry<'a>> + Clone {
+    let tabs = (main.tab_count > 1)
+        .then_some(&main.tabs)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, t)| Entry::Tab(i, t));
+    let remaining = (main.tab_count > 1 && main.tab_count > main.tabs.len())
+        .then(|| main.tab_count - main.tabs.len())
+        .into_iter()
+        .map(Entry::Remaining);
+    let windows = children
+        .iter()
+        .filter(|w| !w.tabbed_hidden || !main.tabs.iter().any(|t| t.title == w.title))
+        .map(|w| Entry::Window(w));
+    tabs.chain(remaining).chain(windows)
 }
 fn abbreviation(title: &str) -> String {
     let text: String = title
@@ -49,7 +53,8 @@ pub(super) fn render_bubbles(
     children: &mut Vec<Retained<NSView>>,
 ) -> f64 {
     let entries = entries(group.main, &group.children);
-    if entries.is_empty() {
+    let total = entries.clone().count();
+    if total == 0 {
         return 0.0;
     }
     let scale = frame.size.height / 32.0;
@@ -58,13 +63,13 @@ pub(super) fn render_bubbles(
     let slots = ((frame.size.width - 30.0 * scale) / step)
         .floor()
         .clamp(1.0, 3.0) as usize;
-    let overflow = entries.len() > slots;
-    let shown = if overflow { slots - 1 } else { entries.len() };
+    let overflow = total > slots;
+    let shown = if overflow { slots - 1 } else { total };
     let count = shown + usize::from(overflow);
     let reserved = count as f64 * step + 3.0 * scale;
-    for index in 0..count {
+    for (index, entry) in entries.take(count).enumerate() {
         let (action, title, tooltip, active) = if index < shown {
-            match &entries[index] {
+            match entry {
                 Entry::Window(w) => (
                     Action::Bubble(w.id),
                     abbreviation(&w.title),
@@ -93,7 +98,7 @@ pub(super) fn render_bubbles(
                 ),
             }
         } else {
-            let remaining = entries.len() - shown;
+            let remaining = total - shown;
             (
                 Action::RelatedMore(group.main.id),
                 if remaining < 10 {
@@ -208,7 +213,6 @@ pub(super) fn show_more(state: &Shared, id: u32) {
             .find(|w| w.id == id)
             .map(|w| {
                 entries(w, &children)
-                    .into_iter()
                     .map(|entry| match entry {
                         Entry::Window(w) => (
                             if w.title.is_empty() {
