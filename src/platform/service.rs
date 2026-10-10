@@ -1,8 +1,12 @@
 //! A fair, incremental AX actor. Native objects and run-loop sources stay here.
 use super::*;
 use crate::{ipc_budget, scheduler::FairQueue};
+use objc2::runtime::ProtocolObject;
+use objc2_app_kit::NSApplicationActivationPolicy;
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, hash_map::Entry},
+    ptr::NonNull,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -68,7 +72,7 @@ impl Observer {
         }
         let value = unsafe { Owned::from_create(value) }?;
         let loop_ = unsafe { CFRunLoopGetCurrent() };
-        let mut this = Self {
+        let this = Self {
             value,
             loop_,
             wake: Arc::new(AtomicBool::new(false)),
@@ -81,7 +85,7 @@ impl Observer {
             ns_string!("AXApplicationHidden"),
             ns_string!("AXApplicationShown"),
         ] {
-            count += this.add(root, name) as usize;
+            count += Self::add(&this.value, &this.wake, root, name) as usize;
         }
         if count == 0 {
             return None;
@@ -95,55 +99,54 @@ impl Observer {
         };
         Some(this)
     }
-    fn add(&mut self, el: Ref, name: &NSString) -> bool {
+    fn add(observer: &Owned, wake: &AtomicBool, el: Ref, name: &NSString) -> bool {
         let Some(timeout) = ipc_budget::timeout() else {
             return false;
         };
+        // SAFETY: Observer keeps this Arc-backed flag alive until after its
+        // native observer and run-loop source are removed.
         unsafe {
             AXUIElementSetMessagingTimeout(el, timeout);
             AXObserverAddNotification(
-                self.value.0,
+                observer.0,
                 el,
                 cf_string(name),
-                Arc::as_ptr(&self.wake).cast_mut().cast(),
+                std::ptr::from_ref(wake).cast_mut().cast(),
             ) == 0
         }
     }
     fn window(&mut self, id: u32, el: Ref) {
-        if !self.registered.contains_key(&id) {
-            if self.registered.len() >= MAX_PER_APP {
-                return;
-            }
-            let Some(element) = (unsafe { Owned::from_borrowed(el) }) else {
-                return;
-            };
-            self.registered.insert(
-                id,
-                Registration {
+        let full = self.registered.len() >= MAX_PER_APP;
+        let registration = match self.registered.entry(id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                if full {
+                    return;
+                }
+                // SAFETY: the scan owns this element throughout registration.
+                let Some(element) = (unsafe { Owned::from_borrowed(el) }) else {
+                    return;
+                };
+                entry.insert(Registration {
                     element,
                     next: 0,
                     remove_next: 0,
-                },
-            );
-        }
+                })
+            }
+        };
         let names = window_notifications();
-        let registration = self.registered.get_mut(&id).unwrap();
         if registration.remove_next > 0 {
             registration.next = 0;
             registration.remove_next = 0;
         }
-        loop {
-            let registration = &self.registered[&id];
-            let next = registration.next;
-            if next == names.len() || ipc_budget::expired() {
+        while let Some(name) = names.get(registration.next) {
+            if ipc_budget::expired() {
                 return;
             }
-            self.add(el, names[next]);
-            self.registered.get_mut(&id).unwrap().next += 1;
+            Self::add(&self.value, &self.wake, el, name);
+            registration.next += 1;
         }
     }
-}
-impl Observer {
     fn prune(&mut self, seen: &HashSet<u32>) {
         self.registered.retain(|id, registration| {
             if seen.contains(id) {
@@ -181,15 +184,13 @@ impl Drop for Observer {
     }
 }
 struct WorkspaceEvents {
-    center: Retained<AnyObject>,
-    tokens: Vec<Retained<AnyObject>>,
+    center: Retained<NSNotificationCenter>,
+    tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     wake: Arc<AtomicBool>,
 }
 impl WorkspaceEvents {
     fn new() -> Self {
-        let workspace: Retained<AnyObject> =
-            unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-        let center: Retained<AnyObject> = unsafe { msg_send![&*workspace, notificationCenter] };
+        let center = NSWorkspace::sharedWorkspace().notificationCenter();
         let wake = Arc::new(AtomicBool::new(false));
         let mut tokens = Vec::new();
         for name in [
@@ -201,11 +202,13 @@ impl WorkspaceEvents {
             ns_string!("NSWorkspaceActiveSpaceDidChangeNotification"),
         ] {
             let signal = wake.clone();
-            let block = block2::RcBlock::new(move |_: *mut AnyObject| {
+            let block = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
                 signal.store(true, Ordering::Relaxed);
             });
-            let token: Retained<AnyObject> = unsafe {
-                msg_send![&*center,addObserverForName:name, object:std::ptr::null::<AnyObject>(), queue:std::ptr::null::<AnyObject>(), usingBlock:&*block]
+            // SAFETY: the block shares only an atomic flag. No object filter or
+            // operation queue adds a thread requirement. Drop removes each token.
+            let token = unsafe {
+                center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
             };
             tokens.push(token);
         }
@@ -219,8 +222,9 @@ impl WorkspaceEvents {
 impl Drop for WorkspaceEvents {
     fn drop(&mut self) {
         for token in &self.tokens {
+            // SAFETY: these tokens came from this center's block registration.
             unsafe {
-                let _: () = msg_send![&*self.center,removeObserver:&**token];
+                self.center.removeObserver(token.as_ref());
             }
         }
     }
@@ -267,8 +271,7 @@ fn public_windows() -> Vec<PublicWindow> {
     let Some(data) = (unsafe { Owned::from_create(CGWindowListCopyWindowInfo(16, 0)) }) else {
         return vec![];
     };
-    array(data.0)
-        .into_iter()
+    array(&data)
         .filter(|d| number(dict(*d, ns_string!("kCGWindowLayer"))) == 0)
         .map(|d| {
             let b = dict(d, ns_string!("kCGWindowBounds"));
@@ -316,21 +319,16 @@ struct BadgeJob {
 }
 impl BadgeJob {
     fn new() -> Option<Self> {
-        let workspace: Retained<AnyObject> =
-            unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-        let apps: Retained<NSArray<AnyObject>> =
-            unsafe { msg_send![&*workspace, runningApplications] };
+        let apps = NSWorkspace::sharedWorkspace().runningApplications();
         let mut names = HashMap::new();
         let mut dock = 0;
         for app in &apps {
-            let bundle: Option<Retained<NSString>> = unsafe { msg_send![&*app, bundleIdentifier] };
-            let name: Option<Retained<NSString>> = unsafe { msg_send![&*app, localizedName] };
-            if let Some(bundle) = bundle {
+            if let Some(bundle) = app.bundleIdentifier() {
                 let bundle = bundle.to_string();
                 if bundle == "com.apple.dock" {
-                    dock = unsafe { msg_send![&*app, processIdentifier] };
+                    dock = app.processIdentifier();
                 }
-                if let Some(name) = name {
+                if let Some(name) = app.localizedName() {
                     names.insert(name.to_string(), bundle);
                 }
             }
@@ -373,10 +371,7 @@ impl BadgeJob {
                 self.result.insert(bundle.clone(), badge);
             }
             if let Some(children) = children {
-                for child in array(children.0)
-                    .into_iter()
-                    .take(200 - self.pending.len().min(200))
-                {
+                for child in array(&children).take(200 - self.pending.len().min(200)) {
                     if let Some(child) = unsafe { Owned::from_borrowed(child) } {
                         self.pending.push_back((child, depth + 1));
                     }
@@ -443,56 +438,57 @@ impl Service {
         self.spaces = active_spaces();
         self.visible.clear();
         if let Some(data) = unsafe { Owned::from_create(CGWindowListCopyWindowInfo(17, 0)) } {
-            for d in array(data.0) {
+            for d in array(&data) {
                 self.visible
                     .insert(number(dict(d, ns_string!("kCGWindowNumber"))) as u32);
             }
         }
-        let workspace: Retained<AnyObject> =
-            unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-        let running: Retained<NSArray<AnyObject>> =
-            unsafe { msg_send![&*workspace, runningApplications] };
-        let front: Option<Retained<AnyObject>> =
-            unsafe { msg_send![&*workspace, frontmostApplication] };
-        self.front = front
-            .map(|a| unsafe { msg_send![&*a, processIdentifier] })
-            .unwrap_or(0);
+        let workspace = NSWorkspace::sharedWorkspace();
+        let running = workspace.runningApplications();
+        self.front = workspace
+            .frontmostApplication()
+            .map_or(0, |app| app.processIdentifier());
         let mut live = HashSet::new();
         for app in &running {
-            let pid: i32 = unsafe { msg_send![&*app, processIdentifier] };
+            let pid = app.processIdentifier();
             // Native fixture checks need prompt focus reports from their owned
             // provider. Production discovery has no fixture filter.
             if self.fixture_pid.is_some_and(|fixture| pid != fixture) {
                 continue;
             }
-            let policy: isize = unsafe { msg_send![&*app, activationPolicy] };
-            if (policy != 0 && Some(pid) != self.fixture_pid) || pid == std::process::id() as i32 {
+            if (app.activationPolicy() != NSApplicationActivationPolicy::Regular
+                && Some(pid) != self.fixture_pid)
+                || pid == std::process::id() as i32
+            {
                 continue;
             }
             if live.len() >= 256 {
                 self.truncated = true;
                 break;
             }
-            let bundle: Option<Retained<NSString>> = unsafe { msg_send![&*app, bundleIdentifier] };
-            let bundle = bundle.map(|v| v.to_string()).unwrap_or_default();
+            let bundle = app
+                .bundleIdentifier()
+                .map(|v| v.to_string())
+                .unwrap_or_default();
             if bundle == "com.fpfxtknjju.wbgcdolfev" {
                 continue;
             }
-            let name: Option<Retained<NSString>> = unsafe { msg_send![&*app, localizedName] };
-            let url: Option<Retained<NSURL>> = unsafe { msg_send![&*app, bundleURL] };
-            let date: Option<Retained<AnyObject>> = unsafe { msg_send![&*app, launchDate] };
             let meta = Meta {
                 pid,
                 bundle,
-                name: name.map(|v| v.to_string()).unwrap_or_default(),
-                path: url
+                name: app
+                    .localizedName()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                path: app
+                    .bundleURL()
                     .and_then(|u| u.path())
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
-                hidden: unsafe { msg_send![&*app, isHidden] },
-                launched: date
-                    .map(|d| unsafe { msg_send![&*d, timeIntervalSince1970] })
-                    .unwrap_or(0.0),
+                hidden: app.isHidden(),
+                launched: app
+                    .launchDate()
+                    .map_or(0.0, |date| date.timeIntervalSince1970()),
             };
             live.insert(pid);
             if self
@@ -592,14 +588,13 @@ impl Service {
                 if !ipc_budget::healthy() {
                     return;
                 }
-                let raw = array(windows.0);
+                let raw = array(&windows);
                 app.coverage_complete = raw.len() <= MAX_PER_APP;
                 if raw.len() > MAX_PER_APP {
                     self.truncated = true;
                 }
                 app.pending = Some(
-                    raw.into_iter()
-                        .take(MAX_PER_APP)
+                    raw.take(MAX_PER_APP)
                         .filter_map(|p| unsafe { Owned::from_borrowed(p) })
                         .collect(),
                 );

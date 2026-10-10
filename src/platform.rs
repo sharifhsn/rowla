@@ -8,7 +8,7 @@ use objc2::{
     rc::autoreleasepool,
     runtime::{AnyClass, AnyObject},
 };
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 use objc2_foundation::{NSArray, NSPoint, NSSize, NSString, NSURL, ns_string};
 use std::{
     collections::{HashMap, HashSet},
@@ -139,15 +139,17 @@ fn dict(d: Ref, key: &NSString) -> Ref {
     }
     unsafe { CFDictionaryGetValue(d, cf_string(key)) }
 }
-fn array(a: Ref) -> Vec<Ref> {
-    if a.is_null() || unsafe { CFGetTypeID(a) != CFArrayGetTypeID() } {
-        return vec![];
-    }
-    unsafe {
-        (0..CFArrayGetCount(a).min(4096))
-            .map(|i| CFArrayGetValueAtIndex(a, i))
-            .collect()
-    }
+fn array(value: &Owned) -> impl ExactSizeIterator<Item = Ref> + DoubleEndedIterator + '_ {
+    // SAFETY: Owned retains the native value for this iterator's lifetime.
+    // Check its type before indexing, and preserve the native enumeration limit.
+    let count = unsafe {
+        if CFGetTypeID(value.0) == CFArrayGetTypeID() {
+            CFArrayGetCount(value.0).clamp(0, 4096)
+        } else {
+            0
+        }
+    };
+    (0..count).map(move |index| unsafe { CFArrayGetValueAtIndex(value.0, index) })
 }
 fn attr(el: Ref, name: &NSString) -> Option<Owned> {
     if el.is_null() || unsafe { CFGetTypeID(el) != AXUIElementGetTypeID() } {
@@ -255,8 +257,7 @@ fn active_spaces() -> HashSet<i64> {
     let Some(data) = (unsafe { Owned::from_create(crate::private_api::active_spaces()) }) else {
         return HashSet::new();
     };
-    array(data.0)
-        .into_iter()
+    array(&data)
         .map(|d| {
             number(dict(
                 dict(d, ns_string!("Current Space")),
@@ -278,17 +279,18 @@ fn window_spaces(id: u32) -> Vec<i64> {
         return vec![];
     };
     let values = [num.0];
-    let a = unsafe {
+    let Some(a) = (unsafe {
         Owned::from_create(CFArrayCreate(
             std::ptr::null(),
             values.as_ptr(),
             1,
             kCFTypeArrayCallBacks.as_ptr().cast(),
         ))
-    }
-    .unwrap();
+    }) else {
+        return vec![];
+    };
     unsafe { Owned::from_create(crate::private_api::window_spaces(a.0)) }
-        .map(|v| array(v.0).into_iter().map(number).collect())
+        .map(|value| array(&value).map(number).collect())
         .unwrap_or_default()
 }
 fn geometry(el: Ref) -> (f64, f64, f64, f64) {
@@ -326,7 +328,7 @@ fn native_tab_group(el: Ref) -> Option<Owned> {
     let children = attr(el, ns_string!("AXChildren"))?;
     // Native AppKit tab bars are direct window children. Do not descend into
     // web content or terminal panes, or retain their accessibility objects.
-    for child in array(children.0).into_iter().take(16) {
+    for child in array(&children).take(16) {
         if text_attr(child, ns_string!("AXRole")) == "AXTabGroup" {
             // SAFETY: retain this borrowed array element before releasing its array.
             return unsafe { Owned::from_borrowed(child) };
@@ -362,7 +364,7 @@ fn native_tab_info(
             return ipc_budget::healthy().then_some((Vec::new(), 0, 0));
         };
         let tabs = attr(group.0, ns_string!("AXTabs"))?;
-        let raw = array(tabs.0);
+        let raw: Vec<_> = array(&tabs).collect();
         let count = raw.len();
         source = Some(tabs);
         (raw, count)
@@ -499,7 +501,7 @@ fn native_tab_window(target: &TabElement, require_selected: bool) -> Option<Owne
     let focused = attr(root.0, ns_string!("AXFocusedWindow"))?;
     let group = native_tab_group(focused.0)?;
     let tabs = attr(group.0, ns_string!("AXTabs"))?;
-    let belongs = array(tabs.0).into_iter().take(128).any(|tab| {
+    let belongs = array(&tabs).take(128).any(|tab| {
         // SAFETY: the copied array and target cache retain both AX elements.
         unsafe { CFEqual(tab, target.element.0) }
     });
@@ -665,15 +667,11 @@ fn execute(
             check(action(button.0, ns_string!("AXPress")))
         }
         Command::Hide(pid) | Command::Quit(pid) => {
-            let app: Option<Retained<AnyObject>> = unsafe {
-                msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationWithProcessIdentifier:pid]
-            };
-            let app = app.ok_or("Application is no longer running")?;
-            check(unsafe {
-                match command {
-                    Command::Hide(_) => msg_send![&*app, hide],
-                    _ => msg_send![&*app, terminate],
-                }
+            let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                .ok_or("Application is no longer running")?;
+            check(match command {
+                Command::Hide(_) => app.hide(),
+                _ => app.terminate(),
             })
         }
         Command::Resize(id, max_y) => {
@@ -791,20 +789,13 @@ fn walk_apps(
     }
 }
 pub fn open_url(url: &str) {
-    let ws: Retained<AnyObject> =
-        unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-    if let Some(u) = NSURL::URLWithString(&NSString::from_str(url)) {
-        unsafe {
-            let _: bool = msg_send![&*ws,openURL:&*u];
-        }
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
     }
 }
 pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
-    let ws: Retained<AnyObject> =
-        unsafe { msg_send![AnyClass::get(c"NSWorkspace").unwrap(), sharedWorkspace] };
-    let url: Option<Retained<NSURL>> = unsafe {
-        msg_send![&*ws,URLForApplicationWithBundleIdentifier:&*NSString::from_str(bundle)]
-    };
+    let workspace = NSWorkspace::sharedWorkspace();
+    let url = workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle));
     let Some(url) = url else {
         return Err("Application is no longer installed".into());
     };
@@ -823,9 +814,9 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
             return Ok(());
         }
         if private {
-            let running: Retained<NSArray<AnyObject>> = unsafe {
-                msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationsWithBundleIdentifier:&*NSString::from_str(bundle)]
-            };
+            let running = NSRunningApplication::runningApplicationsWithBundleIdentifier(
+                &NSString::from_str(bundle),
+            );
             if !running.is_empty() {
                 // Do not silently turn a failed private action into a normal window.
                 return Err("Could not open the requested private window".into());
@@ -841,9 +832,7 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
                 return Ok(());
             }
-            unsafe {
-                let _: bool = msg_send![&*ws,openURL:&*url];
-            }
+            workspace.openURL(&url);
             // A cold Safari launch must expose its menu before AX can invoke
             // New Private Window. This wait belongs to the separate launch worker.
             for _ in 0..10 {
@@ -857,7 +846,7 @@ pub fn launch(bundle: &str, action: &str) -> Result<(), String> {
     }
     let options = 0usize;
     unsafe {
-        let opened: Option<Retained<AnyObject>> = msg_send![&*ws,openURL:&*url, options:options, configuration: &*objc2_foundation::NSDictionary::<NSString,AnyObject>::new(), error:std::ptr::null_mut::<*mut AnyObject>()];
+        let opened: Option<Retained<AnyObject>> = msg_send![&*workspace,openURL:&*url, options:options, configuration: &*objc2_foundation::NSDictionary::<NSString,AnyObject>::new(), error:std::ptr::null_mut::<*mut AnyObject>()];
         opened
             .map(|_| ())
             .ok_or_else(|| "Application launch failed".into())
@@ -867,13 +856,12 @@ fn new_window(bundle: &str, key: &str, modifiers: i64) -> bool {
     if !trusted() {
         return false;
     }
-    let running: Retained<NSArray<AnyObject>> = unsafe {
-        msg_send![AnyClass::get(c"NSRunningApplication").unwrap(),runningApplicationsWithBundleIdentifier:&*NSString::from_str(bundle)]
-    };
+    let running =
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle));
     let Some(app) = running.firstObject() else {
         return false;
     };
-    let pid: i32 = unsafe { msg_send![&*app, processIdentifier] };
+    let pid = app.processIdentifier();
     activate_pid(pid);
     let Some(ax) = (unsafe { Owned::from_create(AXUIElementCreateApplication(pid)) }) else {
         return false;
@@ -904,7 +892,7 @@ fn new_window(bundle: &str, key: &str, modifiers: i64) -> bool {
             return action(el, ns_string!("AXPress"));
         }
         if let Some(children) = attr(el, ns_string!("AXChildren")) {
-            for c in array(children.0) {
+            for c in array(&children) {
                 if visit(c, depth + 1, budget, started, key, modifiers) {
                     return true;
                 }
@@ -1263,6 +1251,35 @@ pub(crate) fn check_fixture_close(pid: i32) -> bool {
 mod native_key_tests {
     use super::*;
     use objc2_foundation::{NSDictionary, NSNumber, ns_string};
+
+    #[test]
+    fn native_arrays_keep_their_owner_and_enforce_the_scan_limit() {
+        autoreleasepool(|_| {
+            let number_value = NSNumber::new_i64(42);
+            // SAFETY: retain these Foundation objects before their original owner drops.
+            let wrong_type =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*number_value).cast()) }.unwrap();
+            assert_eq!(array(&wrong_type).len(), 0);
+
+            let empty = NSArray::<NSNumber>::new();
+            let empty_owner =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*empty).cast()) }.unwrap();
+            assert_eq!(array(&empty_owner).len(), 0);
+
+            let values = vec![number_value; 4_100];
+            let native = NSArray::from_retained_slice(&values);
+            let owner =
+                unsafe { Owned::from_borrowed(std::ptr::from_ref(&*native).cast()) }.unwrap();
+            drop(native);
+            drop(values);
+            let mut elements = array(&owner);
+            assert_eq!(elements.len(), 4_096);
+            assert_eq!(elements.next().map(number), Some(42));
+            assert_eq!(elements.next_back().map(number), Some(42));
+            assert_eq!(elements.len(), 4_094);
+            assert_eq!(elements.map(number).sum::<i64>(), 4_094 * 42);
+        });
+    }
 
     #[test]
     fn native_dictionary_keys_preserve_unicode_and_reject_invalid_inputs() {
