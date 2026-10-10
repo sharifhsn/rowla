@@ -24,6 +24,7 @@ objc2-screen-capture-kit = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
 objc2-core-foundation = "0.3.2"
+objc2-image-io = { version = "0.3.2", default-features = false, features = ["CGImageSource", "objc2-core-graphics"] }
 dispatch2 = "0.3.0"
 block2 = "0.6.2"
 

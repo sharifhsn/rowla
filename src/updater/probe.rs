@@ -1,6 +1,7 @@
 //! Read-only local-feed integration test. Never downloads or installs an update.
 use super::*;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class};
+use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 use objc2_foundation::{NSObject, NSObjectProtocol};
 use std::{
     cell::RefCell,
@@ -50,11 +51,6 @@ define_class!(
         }
     }
 );
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRunLoopRunInMode(mode: *const std::ffi::c_void, seconds: f64, once: bool) -> i32;
-    static kCFRunLoopDefaultMode: *const std::ffi::c_void;
-}
 pub(super) fn run() -> bool {
     let mtm = MainThreadMarker::new().unwrap();
     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -86,8 +82,9 @@ pub(super) fn run() -> bool {
     }
     let start = Instant::now();
     while !result.borrow().finished && start.elapsed() < Duration::from_secs(20) {
-        objc2::rc::autoreleasepool(|_| unsafe {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+        objc2::rc::autoreleasepool(|_| {
+            // SAFETY: Core Foundation supplies this immutable run-loop mode.
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.05, true);
         });
     }
     let data = result.borrow();

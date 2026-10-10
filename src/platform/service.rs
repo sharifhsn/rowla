@@ -3,6 +3,7 @@ use super::*;
 use crate::{ipc_budget, scheduler::FairQueue};
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSApplicationActivationPolicy;
+use objc2_core_foundation::{CFRetained, CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 use std::{
     collections::{VecDeque, hash_map::Entry},
@@ -24,14 +25,6 @@ fn window_notifications() -> [&'static NSString; 6] {
         ns_string!("AXUIElementDestroyed"),
     ]
 }
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRunLoopGetCurrent() -> Ref;
-    fn CFRunLoopAddSource(loop_: Ref, source: Ref, mode: Ref);
-    fn CFRunLoopRemoveSource(loop_: Ref, source: Ref, mode: Ref);
-    fn CFRunLoopRunInMode(mode: Ref, seconds: f64, once: bool) -> i32;
-    static kCFRunLoopDefaultMode: Ref;
-}
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXObserverCreate(
@@ -45,7 +38,7 @@ unsafe extern "C" {
         notification: Ref,
         context: *mut c_void,
     ) -> i32;
-    fn AXObserverGetRunLoopSource(observer: Ref) -> Ref;
+    fn AXObserverGetRunLoopSource(observer: Ref) -> *const CFRunLoopSource;
     fn AXObserverRemoveNotification(observer: Ref, element: Ref, name: Ref) -> i32;
 }
 unsafe extern "C" fn changed(_: Ref, _: Ref, _: Ref, context: *mut c_void) {
@@ -60,7 +53,7 @@ struct Registration {
 }
 struct Observer {
     value: Owned,
-    loop_: Ref,
+    loop_: CFRetained<CFRunLoop>,
     wake: Arc<AtomicBool>,
     registered: HashMap<u32, Registration>,
 }
@@ -71,7 +64,7 @@ impl Observer {
             return None;
         }
         let value = unsafe { Owned::from_create(value) }?;
-        let loop_ = unsafe { CFRunLoopGetCurrent() };
+        let loop_ = CFRunLoop::current()?;
         let this = Self {
             value,
             loop_,
@@ -90,14 +83,15 @@ impl Observer {
         if count == 0 {
             return None;
         }
-        unsafe {
-            CFRunLoopAddSource(
-                loop_,
-                AXObserverGetRunLoopSource(this.value.0),
-                kCFRunLoopDefaultMode,
-            )
-        };
+        // SAFETY: Core Foundation supplies an immutable mode. The observer owns
+        // its source and this worker keeps its run loop alive until removal.
+        this.loop_
+            .add_source(this.source(), unsafe { kCFRunLoopDefaultMode });
         Some(this)
+    }
+    fn source(&self) -> Option<&CFRunLoopSource> {
+        // SAFETY: value owns the AX observer and its source for this borrow.
+        unsafe { AXObserverGetRunLoopSource(self.value.0).as_ref() }
     }
     fn add(observer: &Owned, wake: &AtomicBool, el: Ref, name: &NSString) -> bool {
         let Some(timeout) = ipc_budget::timeout() else {
@@ -174,13 +168,9 @@ impl Observer {
 }
 impl Drop for Observer {
     fn drop(&mut self) {
-        unsafe {
-            CFRunLoopRemoveSource(
-                self.loop_,
-                AXObserverGetRunLoopSource(self.value.0),
-                kCFRunLoopDefaultMode,
-            )
-        };
+        // SAFETY: this is the same immutable mode used at registration.
+        self.loop_
+            .remove_source(self.source(), unsafe { kCFRunLoopDefaultMode });
     }
 }
 struct WorkspaceEvents {
@@ -544,9 +534,8 @@ impl Service {
             .retain(|id, t| tabs.contains(id) || t.seen.elapsed() < Duration::from_secs(1));
     }
     fn poll(&mut self) {
-        unsafe {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, true);
-        }
+        // SAFETY: Core Foundation supplies this immutable run-loop mode.
+        CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.0, true);
         let all = self.events.wake.swap(false, Ordering::Relaxed);
         if all || Instant::now() >= self.next_meta {
             self.reconcile();

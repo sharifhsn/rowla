@@ -32,6 +32,7 @@ Sparkle 2.10 and its bundled components have separate notices in the app resourc
 | objc2-core-video | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-encode | 4.1.0 | MIT |
 | objc2-foundation | 0.3.2 | MIT |
+| objc2-image-io | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-io-surface | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-metal | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-quartz-core | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
@@ -491,7 +492,7 @@ DEALINGS IN THE SOFTWARE.
 
 Upstream: https://github.com/madsmtm/objc2
 
-Includes block2 0.6.2, dispatch2 0.3.1, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-av-foundation 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-audio 0.3.2, objc2-core-audio-types 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-media 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.3.2, objc2-io-surface 0.3.2, objc2-metal 0.3.2, objc2-quartz-core 0.3.2, objc2-screen-capture-kit 0.3.2, objc2-uniform-type-identifiers 0.3.2.
+Includes block2 0.6.2, dispatch2 0.3.1, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-av-foundation 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-audio 0.3.2, objc2-core-audio-types 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-media 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.3.2, objc2-image-io 0.3.2, objc2-io-surface 0.3.2, objc2-metal 0.3.2, objc2-quartz-core 0.3.2, objc2-screen-capture-kit 0.3.2, objc2-uniform-type-identifiers 0.3.2.
 
 Upstream authors named by these package manifests: Mads Marquart and Mary; framework bindings also include the project contributors. The following upstream licensing note is reproduced unmodified. All locked revisions contain the same note.
 

@@ -1,32 +1,13 @@
 //! One on-demand file worker. Only small owned pixels cross to the UI.
 use super::*;
-use objc2_core_foundation::{CFData, CFRetained};
+use objc2_core_foundation::CFData;
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
-use std::{ffi::c_void, fs::File, io::Read, ptr::NonNull, sync::mpsc, time::SystemTime};
+use objc2_image_io::CGImageSource;
+use std::{fs::File, io::Read, sync::mpsc, time::SystemTime};
 
 const MAX_PICTURE_BYTES: u64 = 256 * 1024;
-#[link(name = "ImageIO", kind = "framework")]
-unsafe extern "C" {
-    fn CGImageSourceCreateWithData(data: *const CFData, options: *const c_void) -> *mut c_void;
-    fn CGImageSourceCreateImageAtIndex(
-        source: *const c_void,
-        index: usize,
-        options: *const c_void,
-    ) -> *mut CGImage;
-}
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(value: *const c_void);
-}
-struct Source(NonNull<c_void>);
-impl Drop for Source {
-    fn drop(&mut self) {
-        // SAFETY: ImageIO returned one owned, non-null CF object.
-        unsafe { CFRelease(self.0.as_ptr()) };
-    }
-}
 fn read(path: &Path, max: u64) -> Option<Vec<u8>> {
     let file = File::open(path).ok()?;
     if file.metadata().ok()?.len() > max {
@@ -51,19 +32,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Arc<[u8]>> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
         return None;
     }
-    // SAFETY: CFData copies this live buffer. Create results have one retained
-    // owner on this worker and never cross to the UI as native pointers.
+    // SAFETY: CFData copies this live buffer. ImageIO receives no options.
+    // The typed results own their native objects on this worker.
     let data = unsafe { CFData::new(None, bytes.as_ptr(), bytes.len() as isize) }?;
-    let source = Source(NonNull::new(unsafe {
-        CGImageSourceCreateWithData(&*data, std::ptr::null())
-    })?);
-    let image = unsafe {
-        CFRetained::from_raw(NonNull::new(CGImageSourceCreateImageAtIndex(
-            source.0.as_ptr(),
-            0,
-            std::ptr::null(),
-        ))?)
-    };
+    let source = unsafe { CGImageSource::with_data(&data, None) }?;
+    let image = unsafe { source.image_at_index(0, None) }?;
     if CGImage::width(Some(&image)) != width as usize
         || CGImage::height(Some(&image)) != height as usize
     {

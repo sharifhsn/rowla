@@ -7,11 +7,11 @@ use std::{
 struct Retry {
     failures: u32,
     ready: Option<Instant>,
+    queued: bool,
 }
 #[derive(Default)]
 pub(crate) struct FairQueue {
     live: HashMap<i32, Retry>,
-    queued: HashSet<i32>,
     queue: VecDeque<i32>,
 }
 impl FairQueue {
@@ -19,19 +19,22 @@ impl FairQueue {
         let live: HashSet<_> = pids.into_iter().take(256).collect();
         self.live.retain(|pid, _| live.contains(pid));
         self.queue.retain(|pid| live.contains(pid));
-        self.queued.retain(|pid| live.contains(pid));
         for pid in live {
             self.live.entry(pid).or_default();
         }
     }
     pub(crate) fn notify(&mut self, pid: i32) {
-        if self.live.contains_key(&pid) && self.queued.insert(pid) {
+        if let Some(retry) = self.live.get_mut(&pid)
+            && !retry.queued
+        {
+            retry.queued = true;
             self.queue.push_back(pid);
         }
     }
     pub(crate) fn notify_all(&mut self) {
-        for &pid in self.live.keys() {
-            if self.queued.insert(pid) {
+        for (&pid, retry) in &mut self.live {
+            if !retry.queued {
+                retry.queued = true;
                 self.queue.push_back(pid);
             }
         }
@@ -39,11 +42,15 @@ impl FairQueue {
     pub(crate) fn next(&mut self, now: Instant) -> Option<i32> {
         for _ in 0..self.queue.len() {
             let pid = self.queue.pop_front()?;
-            if self.live[&pid].ready.is_some_and(|ready| now < ready) {
+            let retry = self
+                .live
+                .get_mut(&pid)
+                .expect("queue contains only live applications");
+            if retry.ready.is_some_and(|ready| now < ready) {
                 self.queue.push_back(pid);
                 continue;
             }
-            self.queued.remove(&pid);
+            retry.queued = false;
             return Some(pid);
         }
         None
@@ -65,7 +72,7 @@ impl FairQueue {
         }
     }
     pub(crate) fn pending(&self) -> usize {
-        self.queued.len()
+        self.queue.len()
     }
 }
 #[cfg(test)]
@@ -105,5 +112,27 @@ mod tests {
         assert_eq!(q.pending(), 1);
         assert_eq!(q.next(Instant::now()), Some(5));
         assert_eq!(q.next(Instant::now()), None);
+    }
+    #[test]
+    fn in_flight_events_keep_backoff_and_reused_pids_start_fresh() {
+        let now = Instant::now();
+        let mut q = FairQueue::default();
+        q.set_live([1]);
+        q.notify(1);
+        assert_eq!(q.next(now), Some(1));
+        // A new event arrives while this application is under reconciliation.
+        q.notify(1);
+        q.finish(1, true, true, now);
+        assert_eq!(q.pending(), 1);
+        assert_eq!(q.next(now), None);
+        q.set_live([]);
+        assert_eq!(q.pending(), 0);
+        q.set_live([1]);
+        q.notify_all();
+        assert_eq!(q.next(now), Some(1));
+        assert_eq!(q.pending(), 0);
+        q.finish(1, false, false, now);
+        q.notify_all();
+        assert_eq!(q.next(now), Some(1));
     }
 }
