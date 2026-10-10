@@ -485,8 +485,11 @@ impl Service {
                 .apps
                 .get(&pid)
                 .is_some_and(|a| a.meta.launched != meta.launched)
+                && let Some(previous) = self.apps.remove(&pid)
             {
-                self.apps.remove(&pid);
+                for id in previous.windows.keys() {
+                    self.elements.remove(id);
+                }
             }
             if let Some(a) = self.apps.get_mut(&pid) {
                 if a.meta != meta {
@@ -514,14 +517,12 @@ impl Service {
                 );
             }
         }
-        self.apps.retain(|pid, _| live.contains(pid));
+        for (_, app) in self.apps.extract_if(|pid, _| !live.contains(pid)) {
+            for id in app.windows.keys() {
+                self.elements.remove(id);
+            }
+        }
         self.queue.set_live(self.apps.keys().copied());
-        let valid: HashSet<_> = self
-            .apps
-            .values()
-            .flat_map(|a| a.windows.keys().copied())
-            .collect();
-        self.elements.retain(|id, _| valid.contains(id));
         let tabs: HashSet<_> = self
             .apps
             .values()
@@ -764,18 +765,17 @@ impl Service {
         let continuing = app.pending.as_ref().is_some_and(|p| !p.is_empty());
         let finished = app.pending.is_some() && !continuing && !failed;
         if finished {
-            retain_complete(&mut app.windows, &app.seen, app.coverage_complete);
+            retain_complete(
+                &mut app.windows,
+                &mut self.elements,
+                &app.seen,
+                app.coverage_complete,
+            );
             app.tab_cursor.retain(|id, _| app.windows.contains_key(id));
             app.pending = None;
             app.focus = None;
             app.stale = !app.coverage_complete;
             app.last = Instant::now();
-            let valid: HashSet<_> = self
-                .apps
-                .values()
-                .flat_map(|a| a.windows.keys().copied())
-                .collect();
-            self.elements.retain(|id, _| valid.contains(id));
         } else {
             app.stale = true;
         }
@@ -849,9 +849,18 @@ impl Service {
         }
     }
 }
-fn retain_complete<T>(cache: &mut HashMap<u32, T>, seen: &HashSet<u32>, complete: bool) {
+fn retain_complete<T, U>(
+    cache: &mut HashMap<u32, T>,
+    controls: &mut HashMap<u32, U>,
+    seen: &HashSet<u32>,
+    complete: bool,
+) {
     if complete {
-        cache.retain(|id, _| seen.contains(id));
+        // Native window IDs identify controls across applications. Remove only
+        // this application's missing controls after a complete scan.
+        for (id, _) in cache.extract_if(|id, _| !seen.contains(id)) {
+            controls.remove(&id);
+        }
     }
 }
 #[cfg(test)]
@@ -859,12 +868,24 @@ mod cache_tests {
     use super::*;
     #[test]
     fn ambiguous_or_truncated_generation_preserves_previous_windows() {
+        use std::rc::Rc;
+
         let mut cache = HashMap::from([(1, "previous"), (2, "updated")]);
+        let previous = Rc::new(());
+        let released = Rc::downgrade(&previous);
+        let mut controls = HashMap::from([(1, previous), (2, Rc::new(())), (3, Rc::new(()))]);
         let seen = HashSet::from([2]);
-        retain_complete(&mut cache, &seen, false);
+        retain_complete(&mut cache, &mut controls, &seen, false);
         assert_eq!(cache.len(), 2);
-        retain_complete(&mut cache, &seen, true);
+        assert_eq!(controls.len(), 3);
+        assert!(released.upgrade().is_some());
+        retain_complete(&mut cache, &mut controls, &seen, true);
         assert_eq!(cache, HashMap::from([(2, "updated")]));
+        assert_eq!(
+            controls.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([2, 3])
+        );
+        assert!(released.upgrade().is_none());
     }
 }
 pub(super) fn worker(rx: Receiver<Command>, tx: std::sync::mpsc::SyncSender<Snapshot>) {

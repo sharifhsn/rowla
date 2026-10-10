@@ -12,7 +12,7 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWork
 use objc2_foundation::{NSArray, NSPoint, NSSize, NSString, NSURL, ns_string};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{c_char, c_void},
+    ffi::c_void,
     sync::mpsc::{Receiver, Sender},
     time::{Duration, Instant},
 };
@@ -29,8 +29,6 @@ unsafe extern "C" {
     fn CFDictionaryGetTypeID() -> usize;
     fn CFArrayGetTypeID() -> usize;
     fn CFEqual(a: Ref, b: Ref) -> bool;
-    fn CFStringGetCString(value: Ref, buffer: *mut c_char, size: isize, encoding: u32) -> bool;
-    fn CFStringGetLength(value: Ref) -> isize;
     fn CFArrayGetCount(value: Ref) -> isize;
     fn CFArrayGetValueAtIndex(value: Ref, index: isize) -> Ref;
     fn CFArrayCreate(allocator: Ref, values: *const Ref, count: isize, callbacks: Ref) -> Ref;
@@ -107,6 +105,8 @@ fn cf_string(name: &NSString) -> Ref {
     std::ptr::from_ref(string).cast()
 }
 fn string(p: Ref) -> String {
+    use objc2_core_foundation::{CFString, CFStringBuiltInEncodings};
+
     if p.is_null() {
         return String::new();
     }
@@ -114,8 +114,23 @@ fn string(p: Ref) -> String {
         if CFGetTypeID(p) != CFStringGetTypeID() {
             return String::new();
         }
-        let mut data = vec![0u8; (CFStringGetLength(p) as usize * 4 + 1).min(32769)];
-        if CFStringGetCString(p, data.as_mut_ptr().cast(), data.len() as isize, 0x08000100) {
+        // SAFETY: the caller keeps this native value alive through conversion.
+        // The type check permits this borrow. No native pointer leaves this call.
+        let value = &*p.cast::<CFString>();
+        let size = (value.length() as usize * 4 + 1).min(32769);
+        let mut stack = [0u8; 512];
+        let mut heap = Vec::new();
+        let data = if size <= stack.len() {
+            &mut stack[..size]
+        } else {
+            heap.resize(size, 0);
+            &mut heap
+        };
+        if value.c_string(
+            data.as_mut_ptr().cast(),
+            data.len() as isize,
+            CFStringBuiltInEncodings::EncodingUTF8.0,
+        ) {
             std::ffi::CStr::from_ptr(data.as_ptr().cast())
                 .to_string_lossy()
                 .into_owned()
@@ -1251,6 +1266,34 @@ pub(crate) fn check_fixture_close(pid: i32) -> bool {
 mod native_key_tests {
     use super::*;
     use objc2_foundation::{NSDictionary, NSNumber, ns_string};
+
+    #[test]
+    fn native_strings_preserve_unicode_nuls_and_the_size_limit() {
+        autoreleasepool(|_| {
+            for text in [
+                String::new(),
+                "東京 👩🏽‍💻".into(),
+                "a\0b".into(),
+                "x".repeat(127),
+                "x".repeat(128),
+                "x".repeat(32_768),
+                "x".repeat(32_769),
+                "😀".repeat(8_192),
+                "😀".repeat(8_193),
+            ] {
+                let value = NSString::from_str(&text);
+                let expected = if text.len() <= 32_768 {
+                    text.split('\0').next().unwrap()
+                } else {
+                    ""
+                };
+                assert_eq!(string(cf_string(&value)), expected);
+            }
+            assert!(string(std::ptr::null()).is_empty());
+            let number = NSNumber::new_i64(42);
+            assert!(string(std::ptr::from_ref(&*number).cast()).is_empty());
+        });
+    }
 
     #[test]
     fn native_arrays_keep_their_owner_and_enforce_the_scan_limit() {
