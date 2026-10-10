@@ -1515,11 +1515,11 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
     };
     let windows = &snapshot.windows;
     let mut open_apps: HashSet<&str> = windows.iter().map(|w| w.bundle.as_str()).collect();
-    let pins: Vec<_> = c
+    let pins = c
         .pins
         .iter()
-        .filter(|pin| !open_apps.contains(pin.bundle.as_str()))
-        .collect();
+        .filter(|pin| !open_apps.contains(pin.bundle.as_str()));
+    let pin_count = pins.clone().count();
     let mut eligible: Vec<_> = windows
         .iter()
         .filter(|w| {
@@ -1568,11 +1568,25 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
         if p.backgroundColor() != background {
             p.setBackgroundColor(Some(&background));
         }
-        let mut tasks: Vec<&Window> = eligible
+        let tasks = eligible
             .iter()
             .copied()
-            .filter(|w| c.all_displays || window_on_display(w, f, top))
-            .collect();
+            .filter(|w| c.all_displays || window_on_display(w, f, top));
+        let hidden = {
+            let s = state.borrow();
+            s.hidden_now.contains(&d)
+                || c.hidden_displays.contains(&d)
+                || (c.main_only && d != main_id)
+                || tasks
+                    .clone()
+                    .any(|w| w.focused && w.fullscreen && window_on_display(w, f, top))
+        };
+        if hidden {
+            p.orderOut(None);
+            state.borrow_mut().bars[i].buttons = old;
+            continue;
+        }
+        let mut tasks: Vec<&Window> = tasks.collect();
         if c.group_by_app {
             let mut apps = HashMap::new();
             for w in &tasks {
@@ -1593,27 +1607,13 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
                 .collect()
         };
         groups.retain(|g| c.show_tabs || !g.main.tabbed_hidden);
-        let hidden = {
-            let s = state.borrow();
-            s.hidden_now.contains(&d)
-                || c.hidden_displays.contains(&d)
-                || (c.main_only && d != main_id)
-                || tasks
-                    .iter()
-                    .any(|w| w.focused && w.fullscreen && window_on_display(w, f, top))
-        };
-        if hidden {
-            p.orderOut(None);
-            state.borrow_mut().bars[i].buttons = old;
-            continue;
-        }
         // Reserve once for this redraw. Hidden bars keep their existing map.
-        let mut buttons = HashMap::with_capacity(tasks.len() + pins.len() + 5);
-        let mut fixed_children = Vec::with_capacity(pins.len() + 6);
+        let mut buttons = HashMap::with_capacity(tasks.len() + pin_count + 5);
+        let mut fixed_children = Vec::with_capacity(pin_count + 6);
         let mut task_children = Vec::with_capacity(tasks.len());
         let iw = h + 4.0;
         let sort_width = if c.show_sort { iw } else { 0.0 };
-        let fixed = (pins.len() + usize::from(c.show_start)) as f64 * iw + sort_width;
+        let fixed = (pin_count + usize::from(c.show_start)) as f64 * iw + sort_width;
         let has_bubbles = c.compact_related_windows
             && groups
                 .iter()
@@ -1664,7 +1664,7 @@ fn render_with_frames(state: &Shared, frames: Vec<(u32, NSRect)>, render_started
             buttons.insert(Action::Sort, b);
             x += sort_width;
         }
-        for pin in &pins {
+        for pin in pins.clone() {
             let b = reuse_button(
                 state,
                 &mut old,

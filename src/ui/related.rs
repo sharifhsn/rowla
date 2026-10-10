@@ -8,7 +8,7 @@ enum Entry<'a> {
 }
 fn entries<'a>(
     main: &'a Window,
-    children: &'a [&'a Window],
+    children: impl Iterator<Item = &'a Window> + Clone,
 ) -> impl Iterator<Item = Entry<'a>> + Clone {
     let tabs = (main.tab_count > 1)
         .then_some(&main.tabs)
@@ -21,9 +21,8 @@ fn entries<'a>(
         .into_iter()
         .map(Entry::Remaining);
     let windows = children
-        .iter()
         .filter(|w| !w.tabbed_hidden || !main.tabs.iter().any(|t| t.title == w.title))
-        .map(|w| Entry::Window(w));
+        .map(Entry::Window);
     tabs.chain(remaining).chain(windows)
 }
 fn abbreviation(title: &str) -> String {
@@ -52,7 +51,7 @@ pub(super) fn render_bubbles(
     buttons: &mut HashMap<Action, Retained<ActionButton>>,
     children: &mut Vec<Retained<NSView>>,
 ) -> f64 {
-    let entries = entries(group.main, &group.children);
+    let entries = entries(group.main, group.children.iter().copied());
     let total = entries.clone().count();
     if total == 0 {
         return 0.0;
@@ -188,28 +187,30 @@ pub(super) fn select_tab(state: &Shared, id: u32, tab_id: u64) {
 pub(super) fn show_more(state: &Shared, id: u32) {
     let (owner, items) = {
         let s = state.borrow();
-        let owner = s
+        let Some(owner) = s
             .bars
             .iter()
             .find_map(|bar| bar.buttons.get(&Action::RelatedMore(id)))
-            .cloned();
+            .cloned()
+        else {
+            return;
+        };
         let ids = s
             .bars
             .iter()
             .find_map(|bar| bar.buttons.get(&Action::Window(id)))
-            .map(|b| b.ivars().related_ids.borrow().clone())
-            .unwrap_or_default();
+            .map(|b| b.ivars().related_ids.borrow());
         let children = ids
             .iter()
-            .filter_map(|id| s.snapshot.windows.iter().find(|w| w.id == *id))
-            .collect::<Vec<_>>();
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| s.snapshot.windows.iter().find(|w| w.id == *id));
         let items = s
             .snapshot
             .windows
             .iter()
             .find(|w| w.id == id)
             .map(|w| {
-                entries(w, &children)
+                entries(w, children)
                     .map(|entry| match entry {
                         Entry::Window(w) => (
                             if w.title.is_empty() {
@@ -232,9 +233,6 @@ pub(super) fn show_more(state: &Shared, id: u32) {
             })
             .unwrap_or_default();
         (owner, items)
-    };
-    let Some(owner) = owner else {
-        return;
     };
     let menu = NSMenu::new(MainThreadMarker::new().unwrap());
     for (title, action) in items {
