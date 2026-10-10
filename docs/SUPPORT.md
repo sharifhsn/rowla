@@ -17,15 +17,16 @@ This is a volunteer beta project. There is no guaranteed response time.
 
 ## First-launch problems
 
-The download needs macOS 15.2+ and Apple Silicon. It uses a development certificate without Apple notarization.
-If macOS blocks it, use Open Anyway for Rowla as described in the user guide.
-Some managed Macs do not permit this exception.
+The current download needs macOS 15.2+ and Apple Silicon. It uses Developer ID and Apple notarization.
+If macOS blocks it, confirm that you downloaded the current release from the official repository.
+Earlier beta downloads use a development certificate and can require Open Anyway.
 
 Accessibility access controls window discovery and window actions. Screen Recording access controls thumbnail capture.
 Confirm the relevant grant in System Settings. Quit and reopen Rowla after a permission change if macOS requests it.
 An enabled switch in Settings does not prove that a changed app build has a valid grant.
 
 Ad-hoc source builds can need new grants after code changes.
+The first Developer ID build can need new grants after an earlier development build.
 For repeated local builds, see [the certificate procedure](RELEASE.md#local-signatures-and-permissions).
 Do not edit the macOS permission database.
 

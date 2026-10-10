@@ -3,16 +3,18 @@
 ## Manual beta packages
 
 The public beta uses manual downloads. It has no live update feed.
-The first beta uses a persistent development certificate. Apple did not notarize it.
+Beta 3 uses Developer ID and Apple notarization. Earlier betas use a development certificate without notarization.
 
 1. Complete the checks in [CONTRIBUTING.md](../CONTRIBUTING.md).
 2. Use a build number greater than all previous public builds.
 3. Build the app with the chosen certificate.
-4. Do the native checks on that fixed bundle. Include the binary-floor check and signed shortcut imports.
-5. Package the same bundle without another build or signature change.
+4. Submit the Developer ID bundle for notarization and attach its ticket.
+5. Do the native checks on that fixed bundle. Include the binary-floor check and signed shortcut imports.
+6. Package the same bundle without another build or signature change.
 
 ```sh
-TASKBAR_BUILD_NUMBER=INTEGER TASKBAR_SIGNING_IDENTITY=CERTIFICATE_SHA1 TASKBAR_SIGNING_MODE=local scripts/build.sh
+TASKBAR_BUILD_NUMBER=INTEGER TASKBAR_SIGNING_IDENTITY=CERTIFICATE_SHA1 TASKBAR_SIGNING_MODE=developer-id scripts/build.sh
+TASKBAR_NOTARY_PROFILE=KEYCHAIN_PROFILE scripts/notarize.sh dist/Rowla.app
 scripts/package-beta.sh dist/Rowla.app dist/beta-OUTPUT 0.2.0-beta.NUMBER
 ```
 
@@ -45,9 +47,10 @@ macOS controls the permission grants. A stable certificate does not bypass its p
 It rejects a certificate change by default when the destination has a certificate signature.
 Quit the installed app before replacement.
 
-## Optional notarized releases
+## Optional automatic updates
 
-These tools are available for a future Developer ID release. The current beta does not use this route.
+The manual beta uses `scripts/notarize.sh`. The other release tools also prepare a signed Sparkle update feed.
+The current beta has no live update feed.
 
 | Tool | Action |
 | --- | --- |

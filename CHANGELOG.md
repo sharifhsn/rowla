@@ -1,5 +1,11 @@
 # Release notes
 
+## 0.2.0-beta.3 — October 10, 2026
+
+- Developer ID replaces the development certificate for the public download.
+- Apple notarization and an attached ticket permit standard Gatekeeper verification.
+- Window controls and memory limits remain the same as beta 2. Updates use manual downloads.
+
 ## 0.2.0-beta.2 — October 10, 2026
 
 - Related utility windows and native tabs appear as compact bubbles on their main tile.

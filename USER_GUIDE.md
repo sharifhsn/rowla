@@ -13,7 +13,7 @@ Official downloads and support: <https://github.com/sharifhsn/rowla>
 - Accessibility permission for window discovery and controls.
 - Optional Screen Recording permission for thumbnails.
 
-This is a free beta with a persistent development signature. Apple did not notarize this release. macOS can block first launch until you approve this specific app. Automatic updates are disabled. Use manual downloads for later beta versions.
+This free beta uses Developer ID and Apple notarization. Automatic updates are disabled. Use manual downloads for later beta versions.
 
 The executable and app manifest both set a macOS 15.2 minimum. Newer optional APIs use runtime availability checks.
 Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBILITY.md) for the API review and older-version limits.
@@ -24,13 +24,14 @@ Read [compatibility](https://github.com/sharifhsn/rowla/blob/main/docs/COMPATIBI
 2. Extract `Rowla.app`.
 3. Move `Rowla.app` to your Applications folder.
 4. Open Rowla.
-5. If macOS blocks first launch, open System Settings → Privacy & Security.
-6. Select Open Anyway for Rowla, then confirm Open.
-7. Grant Accessibility access to Rowla in System Settings → Privacy & Security → Accessibility.
-8. To enable thumbnails, grant Screen Recording access to Rowla in System Settings → Privacy & Security.
-9. Quit and reopen Rowla if macOS requests a restart of the app after a permission change.
+5. Confirm Open if macOS asks about the downloaded app.
+6. Grant Accessibility access to Rowla in System Settings → Privacy & Security → Accessibility.
+7. To enable thumbnails, grant Screen Recording access to Rowla in System Settings → Privacy & Security.
+8. Quit and reopen Rowla if macOS requests a restart of the app after a permission change.
 
-[Apple describes Open Anyway](https://support.apple.com/en-us/102445). Some managed Macs prohibit this exception. Rowla does not need you to disable Gatekeeper or SIP.
+Earlier beta downloads use a development certificate and can require [Open Anyway](https://support.apple.com/en-us/102445).
+The first Developer ID build can need new permission grants after an earlier development build.
+Keep Gatekeeper and SIP enabled.
 
 ## Everyday controls
 
